@@ -41,6 +41,7 @@ def find_ttyusb(port_name):
         resolved_path = os.readlink(full_path)
         actual_device = os.path.basename(resolved_path)
         if actual_device.startswith("ttyUSB"):
+            print("FOUND DEVICE!")
             return actual_device
         else:
             raise Exception(
@@ -95,28 +96,28 @@ class FACTRTeleop(Node, ABC):
         self.gripper_pos_prev = 0.0
         self.gripper_pos = 0.0
 
-        # gravity comp
-        self.enable_gravity_comp = self.config["controller"]["gravity_comp"]["enable"]
-        self.gravity_comp_modifier = self.config["controller"]["gravity_comp"]["gain"]
-        self.tau_g = np.zeros(self.num_arm_joints)
-        # friction comp
-        self.stiction_comp_enable_speed = self.config["controller"]["static_friction_comp"]["enable_speed"]
-        self.stiction_comp_gain = self.config["controller"]["static_friction_comp"]["gain"]
-        self.stiction_dither_flag = np.ones((self.num_arm_joints), dtype=bool)
-        # joint limit barrier:
-        self.joint_limit_kp = self.config["controller"]["joint_limit_barrier"]["kp"]
-        self.joint_limit_kd = self.config["controller"]["joint_limit_barrier"]["kd"]
-        # null space regulation
-        self.null_space_joint_target = np.array(self.config["controller"]["null_space_regulation"]["null_space_joint_target"])
-        self.null_space_kp = self.config["controller"]["null_space_regulation"]["kp"]
-        self.null_space_kd = self.config["controller"]["null_space_regulation"]["kd"]
-        # torque feedback
-        self.enable_torque_feedback = self.config["controller"]["torque_feedback"]["enable"]
-        self.torque_feedback_gain = self.config["controller"]["torque_feedback"]["gain"]
-        self.torque_feedback_motor_scalar = self.config["controller"]["torque_feedback"]["motor_scalar"]
-        self.torque_feedback_damping = self.config["controller"]["torque_feedback"]["damping"]
-        # gripper feedback
-        self.enable_gripper_feedback = self.config["controller"]["gripper_feedback"]["enable"]
+        # # gravity comp
+        # self.enable_gravity_comp = self.config["controller"]["gravity_comp"]["enable"]
+        # self.gravity_comp_modifier = self.config["controller"]["gravity_comp"]["gain"]
+        # self.tau_g = np.zeros(self.num_arm_joints)
+        # # friction comp
+        # self.stiction_comp_enable_speed = self.config["controller"]["static_friction_comp"]["enable_speed"]
+        # self.stiction_comp_gain = self.config["controller"]["static_friction_comp"]["gain"]
+        # self.stiction_dither_flag = np.ones((self.num_arm_joints), dtype=bool)
+        # # joint limit barrier:
+        # self.joint_limit_kp = self.config["controller"]["joint_limit_barrier"]["kp"]
+        # self.joint_limit_kd = self.config["controller"]["joint_limit_barrier"]["kd"]
+        # # null space regulation
+        # self.null_space_joint_target = np.array(self.config["controller"]["null_space_regulation"]["null_space_joint_target"])
+        # self.null_space_kp = self.config["controller"]["null_space_regulation"]["kp"]
+        # self.null_space_kd = self.config["controller"]["null_space_regulation"]["kd"]
+        # # torque feedback
+        # self.enable_torque_feedback = self.config["controller"]["torque_feedback"]["enable"]
+        # self.torque_feedback_gain = self.config["controller"]["torque_feedback"]["gain"]
+        # self.torque_feedback_motor_scalar = self.config["controller"]["torque_feedback"]["motor_scalar"]
+        # self.torque_feedback_damping = self.config["controller"]["torque_feedback"]["damping"]
+        # # gripper feedback
+        # self.enable_gripper_feedback = self.config["controller"]["gripper_feedback"]["enable"]
         
         # needs to be implemented to establish communication between the leader and the follower
         self.set_up_communication()
@@ -237,10 +238,11 @@ class FACTRTeleop(Node, ABC):
         follower arm before the follower arm starts mirroring the leader arm. 
         """
         curr_pos, _, _, _ = self.get_leader_joint_states()
-        while (np.linalg.norm(curr_pos - self.initial_match_joint_pos[0:self.num_arm_joints]) > 0.6):
+        while (np.linalg.norm(curr_pos - self.initial_match_joint_pos[0:self.num_arm_joints]) > 1.3):
             current_joint_error = np.linalg.norm(
                 curr_pos - self.initial_match_joint_pos[0:self.num_arm_joints]
             )
+            print("current joint pos: ", [f"{x:.3f}" for x in curr_pos])
             self.get_logger().info(
                 f"FACTR TELEOP {self.name}: Please match starting joint pos. Current error: {current_joint_error}"
             )
@@ -270,6 +272,8 @@ class FACTRTeleop(Node, ABC):
         
         gripper_vel = (self.gripper_pos - self.gripper_pos_prev) / self.dt
         return joint_pos_arm, joint_vel_arm, self.gripper_pos, gripper_vel
+
+        
     
     def set_leader_joint_pos(self, goal_joint_pos, goal_gripper_pos):
         """
@@ -415,26 +419,27 @@ class FACTRTeleop(Node, ABC):
         leader_arm_pos, leader_arm_vel, leader_gripper_pos, leader_gripper_vel = self.get_leader_joint_states()
 
         torque_arm = np.zeros(self.num_arm_joints)
-        torque_l, torque_gripper = self.joint_limit_barrier(
-            leader_arm_pos, leader_arm_vel, leader_gripper_pos, leader_gripper_vel
-        )
-        torque_arm += torque_l
-        torque_arm += self.null_space_regulation(leader_arm_pos, leader_arm_vel)
+        # torque_l, torque_gripper = self.joint_limit_barrier(
+        #     leader_arm_pos, leader_arm_vel, leader_gripper_pos, leader_gripper_vel
+        # )
+        # torque_arm += torque_l
+        # torque_arm += self.null_space_regulation(leader_arm_pos, leader_arm_vel)
 
-        if self.enable_gravity_comp:
-            torque_arm += self.gravity_compensation(leader_arm_pos, leader_arm_vel)
-            torque_arm += self.friction_compensation(leader_arm_vel)
+        # if self.enable_gravity_comp:
+        #     torque_arm += self.gravity_compensation(leader_arm_pos, leader_arm_vel)
+        #     torque_arm += self.friction_compensation(leader_arm_vel)
         
-        if self.enable_torque_feedback:
-            external_joint_torque = self.get_leader_arm_external_joint_torque()
-            torque_arm += self.torque_feedback(external_joint_torque, leader_arm_vel)
+        # if self.enable_torque_feedback:
+        #     print(self.get_leader_arm_external_joint_torque())
+        #     external_joint_torque = self.get_leader_arm_external_joint_torque()
+        #     torque_arm += self.torque_feedback(external_joint_torque, leader_arm_vel)
         
-        if self.enable_gripper_feedback:
-            gripper_feedback = self.get_leader_gripper_feedback()
-            torque_gripper += self.gripper_feedback(leader_gripper_pos, leader_gripper_vel, gripper_feedback)
+        # if self.enable_gripper_feedback:
+        #     gripper_feedback = self.get_leader_gripper_feedback()
+        #     torque_gripper += self.gripper_feedback(leader_gripper_pos, leader_gripper_vel, gripper_feedback)
 
-        self.set_leader_joint_torque(torque_arm, torque_gripper)
-        self.update_communication(leader_arm_pos, leader_gripper_pos)
+        # self.set_leader_joint_torque(torque_arm, torque_gripper)
+        # self.update_communication(leader_arm_pos, leader_gripper_pos)
 
 
     @abstractmethod
