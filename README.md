@@ -85,6 +85,7 @@ Then:
 ## FACTR Teleop
 
 To publish just the joint positions via ROS2:
+The code is in `/src/factr_teleop/factr_teleop/factr_rizon_teleop.py`
 
    1, Navigate to the root folder of your workspace
    
