@@ -40,12 +40,12 @@ class FactrRizonTeleop(FACTRTeleop):
         return joint_pos
 
 
-    def control_loop_callback(self):
-        """
-        Override the control loop callback from FACTRTeleop. This is being called at 500Hz
-        """
-        joint_pos = self.get_leader_joint_pos()
-        self.joint_positions = joint_pos
+    # def control_loop_callback(self):
+    #     """
+    #     Override the control loop callback from FACTRTeleop. This is being called at 500Hz
+    #     """
+    #     joint_pos = self.get_leader_joint_pos()
+    #     self.joint_positions = joint_pos
 
     
     def publish_joint_pos(self):

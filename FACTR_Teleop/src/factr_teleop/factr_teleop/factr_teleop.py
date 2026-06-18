@@ -78,6 +78,8 @@ class FACTRTeleop(Node, ABC):
         self._prepare_dynamixel()
         self._prepare_inverse_dynamics()
 
+        # Reading from /configs/franka_example.yaml
+        # NEED TO modify the urdf file for the FACTR-Rizon setup!
         # leader arm parameters
         self.num_arm_joints = self.config["arm_teleop"]["num_arm_joints"]
         self.safety_margin = self.config["arm_teleop"]["arm_joint_limits_safety_margin"]
@@ -96,28 +98,28 @@ class FACTRTeleop(Node, ABC):
         self.gripper_pos_prev = 0.0
         self.gripper_pos = 0.0
 
-        # # gravity comp
-        # self.enable_gravity_comp = self.config["controller"]["gravity_comp"]["enable"]
-        # self.gravity_comp_modifier = self.config["controller"]["gravity_comp"]["gain"]
-        # self.tau_g = np.zeros(self.num_arm_joints)
-        # # friction comp
-        # self.stiction_comp_enable_speed = self.config["controller"]["static_friction_comp"]["enable_speed"]
-        # self.stiction_comp_gain = self.config["controller"]["static_friction_comp"]["gain"]
-        # self.stiction_dither_flag = np.ones((self.num_arm_joints), dtype=bool)
-        # # joint limit barrier:
-        # self.joint_limit_kp = self.config["controller"]["joint_limit_barrier"]["kp"]
-        # self.joint_limit_kd = self.config["controller"]["joint_limit_barrier"]["kd"]
-        # # null space regulation
-        # self.null_space_joint_target = np.array(self.config["controller"]["null_space_regulation"]["null_space_joint_target"])
-        # self.null_space_kp = self.config["controller"]["null_space_regulation"]["kp"]
-        # self.null_space_kd = self.config["controller"]["null_space_regulation"]["kd"]
-        # # torque feedback
-        # self.enable_torque_feedback = self.config["controller"]["torque_feedback"]["enable"]
-        # self.torque_feedback_gain = self.config["controller"]["torque_feedback"]["gain"]
-        # self.torque_feedback_motor_scalar = self.config["controller"]["torque_feedback"]["motor_scalar"]
-        # self.torque_feedback_damping = self.config["controller"]["torque_feedback"]["damping"]
-        # # gripper feedback
-        # self.enable_gripper_feedback = self.config["controller"]["gripper_feedback"]["enable"]
+        # gravity comp
+        self.enable_gravity_comp = self.config["controller"]["gravity_comp"]["enable"]
+        self.gravity_comp_modifier = self.config["controller"]["gravity_comp"]["gain"]
+        self.tau_g = np.zeros(self.num_arm_joints)
+        # friction comp
+        self.stiction_comp_enable_speed = self.config["controller"]["static_friction_comp"]["enable_speed"]
+        self.stiction_comp_gain = self.config["controller"]["static_friction_comp"]["gain"]
+        self.stiction_dither_flag = np.ones((self.num_arm_joints), dtype=bool)
+        # joint limit barrier:
+        self.joint_limit_kp = self.config["controller"]["joint_limit_barrier"]["kp"]
+        self.joint_limit_kd = self.config["controller"]["joint_limit_barrier"]["kd"]
+        # null space regulation
+        self.null_space_joint_target = np.array(self.config["controller"]["null_space_regulation"]["null_space_joint_target"])
+        self.null_space_kp = self.config["controller"]["null_space_regulation"]["kp"]
+        self.null_space_kd = self.config["controller"]["null_space_regulation"]["kd"]
+        # torque feedback
+        self.enable_torque_feedback = self.config["controller"]["torque_feedback"]["enable"]
+        self.torque_feedback_gain = self.config["controller"]["torque_feedback"]["gain"]
+        self.torque_feedback_motor_scalar = self.config["controller"]["torque_feedback"]["motor_scalar"]
+        self.torque_feedback_damping = self.config["controller"]["torque_feedback"]["damping"]
+        # gripper feedback
+        self.enable_gripper_feedback = self.config["controller"]["gripper_feedback"]["enable"]
         
         # needs to be implemented to establish communication between the leader and the follower
         self.set_up_communication()
@@ -126,7 +128,9 @@ class FACTRTeleop(Node, ABC):
         self._get_dynamixel_offsets()
         # ensure the leader and the follower arms have the same joint positions before starting
         self._match_start_pos()
+
         # start the control loop
+        # self.dt = 500Hz 
         self.timer = self.create_timer(self.dt, self.control_loop_callback)
 
 
@@ -419,15 +423,15 @@ class FACTRTeleop(Node, ABC):
         leader_arm_pos, leader_arm_vel, leader_gripper_pos, leader_gripper_vel = self.get_leader_joint_states()
 
         torque_arm = np.zeros(self.num_arm_joints)
-        # torque_l, torque_gripper = self.joint_limit_barrier(
-        #     leader_arm_pos, leader_arm_vel, leader_gripper_pos, leader_gripper_vel
-        # )
-        # torque_arm += torque_l
-        # torque_arm += self.null_space_regulation(leader_arm_pos, leader_arm_vel)
+        torque_l, torque_gripper = self.joint_limit_barrier(
+            leader_arm_pos, leader_arm_vel, leader_gripper_pos, leader_gripper_vel
+        )
+        torque_arm += torque_l
+        torque_arm += self.null_space_regulation(leader_arm_pos, leader_arm_vel)
 
-        # if self.enable_gravity_comp:
-        #     torque_arm += self.gravity_compensation(leader_arm_pos, leader_arm_vel)
-        #     torque_arm += self.friction_compensation(leader_arm_vel)
+        if self.enable_gravity_comp:
+            torque_arm += self.gravity_compensation(leader_arm_pos, leader_arm_vel)
+            torque_arm += self.friction_compensation(leader_arm_vel)
         
         # if self.enable_torque_feedback:
         #     print(self.get_leader_arm_external_joint_torque())
@@ -438,7 +442,7 @@ class FACTRTeleop(Node, ABC):
         #     gripper_feedback = self.get_leader_gripper_feedback()
         #     torque_gripper += self.gripper_feedback(leader_gripper_pos, leader_gripper_vel, gripper_feedback)
 
-        # self.set_leader_joint_torque(torque_arm, torque_gripper)
+        self.set_leader_joint_torque(torque_arm, torque_gripper)
         # self.update_communication(leader_arm_pos, leader_gripper_pos)
 
 
