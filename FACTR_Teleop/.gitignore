@@ -1,0 +1,14 @@
+# ros
+build/
+install/
+log/
+
+# python
+__pycache__/
+*.egg-info
+
+# data
+raw_data
+
+# misc
+.vscode/
