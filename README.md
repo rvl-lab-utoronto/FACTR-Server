@@ -26,7 +26,7 @@ graph LR
 
     %% Connections
     B <--> C
-    C <--> D
+    C <--> E
     
     %% Styling (Optional)
     style C fill:#f9f,stroke:#333,stroke-width:2px
