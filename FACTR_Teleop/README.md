@@ -94,4 +94,6 @@ To publish just the joint positions via ROS2:
    
    4, run `ros2 run factr_teleop factr_rizon_testing`
 
+NOTE: the current gravity compensation model is built on top of the FACTR-Franka setup, our FACTR-Rizon setup has different arm proportions that need to be updated.
+
 
