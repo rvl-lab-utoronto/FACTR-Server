@@ -67,7 +67,7 @@ class FACTRTeleop(Node, ABC):
     def __init__(self):
         super().__init__('factr_teleop')
 
-        config_file_name = self.declare_parameter('config_file', 'franka_example.yaml').get_parameter_value().string_value
+        config_file_name = self.declare_parameter('config_file', 'factr_rizon.yaml').get_parameter_value().string_value
         config_path = os.path.join(get_workspace_root(), f"src/factr_teleop/factr_teleop/configs/{config_file_name}")
         with open(config_path, 'r') as config_file:
             self.config = yaml.safe_load(config_file)
@@ -242,7 +242,7 @@ class FACTRTeleop(Node, ABC):
         follower arm before the follower arm starts mirroring the leader arm. 
         """
         curr_pos, _, _, _ = self.get_leader_joint_states()
-        while (np.linalg.norm(curr_pos - self.initial_match_joint_pos[0:self.num_arm_joints]) > 1.3):
+        while (np.linalg.norm(curr_pos - self.initial_match_joint_pos[0:self.num_arm_joints]) > 5):
             current_joint_error = np.linalg.norm(
                 curr_pos - self.initial_match_joint_pos[0:self.num_arm_joints]
             )
@@ -390,9 +390,13 @@ class FACTRTeleop(Node, ABC):
         the null space of the task Jacobian to achieve secondary objectives without 
         affecting the primary task.
         """
+        print("START")
+        print(self.pin_model, self.pin_data, arm_joint_pos, self.num_arm_joints)
+        print("FINSIHED")
         J = pin.computeJointJacobian(
             self.pin_model, self.pin_data, arm_joint_pos, self.num_arm_joints
         )
+        print("FINSIHED")
         J_dagger = np.linalg.pinv(J)
         null_space_projector = np.eye(self.num_arm_joints) - J_dagger @ J
         q_error = arm_joint_pos - self.null_space_joint_target[0:self.num_arm_joints]

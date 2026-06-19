@@ -1,0 +1,337 @@
+<?xml version="1.0" ?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="FlexivRizonURDF_V2">
+  <material name="silver">
+    <color rgba="0.700 0.700 0.700 1.000"/>
+  </material>
+  <transmission name="base_to_one_tran">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="base_to_one">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="base_to_one_actr">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+  <transmission name="one_to_two_tran">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="one_to_two">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="one_to_two_actr">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+  <transmission name="two_to_three_tran">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="two_to_three">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="two_to_three_actr">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+  <transmission name="three_to_four_tran">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="three_to_four">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="three_to_four_actr">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+  <transmission name="four_to_five_tran">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="four_to_five">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="four_to_five_actr">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+  <transmission name="five_to_six_tran">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="five_to_six">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="five_to_six_actr">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+  <transmission name="six_to_seven_tran">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="six_to_seven">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="six_to_seven_actr">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+  <gazebo>
+    <plugin name="control" filename="libgazebo_ros_control.so"/>
+  </gazebo>
+  <gazebo reference="base_link">
+    <material>Gazebo/Silver</material>
+    <mu1>0.2</mu1>
+    <mu2>0.2</mu2>
+    <selfCollide>true</selfCollide>
+    <gravity>true</gravity>
+  </gazebo>
+  <gazebo reference="link_1_1">
+    <material>Gazebo/Silver</material>
+    <mu1>0.2</mu1>
+    <mu2>0.2</mu2>
+    <selfCollide>true</selfCollide>
+  </gazebo>
+  <gazebo reference="link_2_1">
+    <material>Gazebo/Silver</material>
+    <mu1>0.2</mu1>
+    <mu2>0.2</mu2>
+    <selfCollide>true</selfCollide>
+  </gazebo>
+  <gazebo reference="link_3_1">
+    <material>Gazebo/Silver</material>
+    <mu1>0.2</mu1>
+    <mu2>0.2</mu2>
+    <selfCollide>true</selfCollide>
+  </gazebo>
+  <gazebo reference="link_4_1">
+    <material>Gazebo/Silver</material>
+    <mu1>0.2</mu1>
+    <mu2>0.2</mu2>
+    <selfCollide>true</selfCollide>
+  </gazebo>
+  <gazebo reference="link_5_1">
+    <material>Gazebo/Silver</material>
+    <mu1>0.2</mu1>
+    <mu2>0.2</mu2>
+    <selfCollide>true</selfCollide>
+  </gazebo>
+  <gazebo reference="link_6_1">
+    <material>Gazebo/Silver</material>
+    <mu1>0.2</mu1>
+    <mu2>0.2</mu2>
+    <selfCollide>true</selfCollide>
+  </gazebo>
+  <gazebo reference="link_7_1">
+    <material>Gazebo/Silver</material>
+    <mu1>0.2</mu1>
+    <mu2>0.2</mu2>
+    <selfCollide>true</selfCollide>
+  </gazebo>
+  <link name="base_link">
+    <inertial>
+      <origin xyz="0.013134132320096555 6.700780703133406e-05 0.01234859531832946" rpy="0 0 0"/>
+      <mass value="0.215"/>
+      <inertia ixx="0.000743" iyy="0.002621" izz="0.003049" ixy="2e-06" iyz="-0.0" ixz="-0.00029"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/base_link.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/base_link.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="link_1_1">
+    <inertial>
+      <origin xyz="0.0001383692693600197 -3.348312306670348e-11 0.05053775369995959" rpy="0 0 0"/>
+      <mass value="0.0763"/>
+      <inertia ixx="0.000202" iyy="0.000217" izz="7.9e-05" ixy="-0.0" iyz="-0.0" ixz="0.0"/>
+    </inertial>
+    <visual>
+      <origin xyz="-0.047 -0.00025 -0.037" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/link_1.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin xyz="-0.047 -0.00025 -0.037" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/link_1.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="link_2_1">
+    <inertial>
+      <origin xyz="0.015663957402089205 -0.00015108771925596967 0.044037697216567875" rpy="0 0 0"/>
+      <mass value="0.03249"/>
+      <inertia ixx="9.5e-05" iyy="0.000132" izz="5e-05" ixy="1e-06" iyz="-1e-06" ixz="1.3e-05"/>
+    </inertial>
+    <visual>
+      <origin xyz="-0.028 -0.00025 -0.10675" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/link_2.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin xyz="-0.028 -0.00025 -0.10675" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/link_2.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="link_3_1">
+    <inertial>
+      <origin xyz="0.00013979419032984775 -1.8930169931596907e-16 0.05908846909303328" rpy="0 0 0"/>
+      <mass value="0.075525"/>
+      <inertia ixx="0.000228" iyy="0.000244" izz="7.8e-05" ixy="-0.0" iyz="0.0" ixz="0.0"/>
+    </inertial>
+    <visual>
+      <origin xyz="-0.0471 -0.00025 -0.1775" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/link_3.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin xyz="-0.0471 -0.00025 -0.1775" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/link_3.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="link_4_1">
+    <inertial>
+      <origin xyz="0.015176039441940611 -0.0001558705429334102 0.042697674502670646" rpy="0 0 0"/>
+      <mass value="0.030735"/>
+      <inertia ixx="8.8e-05" iyy="0.000123" izz="4.7e-05" ixy="1e-06" iyz="-1e-06" ixz="1.2e-05"/>
+    </inertial>
+    <visual>
+      <origin xyz="-0.0281 -0.00025 -0.25625" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/link_4.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin xyz="-0.0281 -0.00025 -0.25625" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/link_4.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="link_5_1">
+    <inertial>
+      <origin xyz="-0.027005951135623 6.174531372304948e-17 0.045890393955621944" rpy="0 0 0"/>
+      <mass value="0.02995185"/>
+      <inertia ixx="6.3e-05" iyy="7.5e-05" izz="2.6e-05" ixy="0.0" iyz="-0.0" ixz="1.9e-05"/>
+    </inertial>
+    <visual>
+      <origin xyz="-0.0472 -0.00025 -0.325" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/link_5.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin xyz="-0.0472 -0.00025 -0.325" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/link_5.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="link_6_1">
+    <inertial>
+      <origin xyz="0.020226851538601584 -0.00031075543541736776 0.03154378049515688" rpy="0 0 0"/>
+      <mass value="0.02685"/>
+      <inertia ixx="3.4e-05" iyy="4.7e-05" izz="3e-05" ixy="-0.0" iyz="0.0" ixz="-1.2e-05"/>
+    </inertial>
+    <visual>
+      <origin xyz="-0.0312 -0.00025 -0.387" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/link_6.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin xyz="-0.0312 -0.00025 -0.387" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/link_6.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="link_7_1">
+    <inertial>
+      <origin xyz="-0.0023059430855942725 -0.05156602968925009 -0.004412499614625309" rpy="0 0 0"/>
+      <mass value="0.08011907"/>
+      <inertia ixx="0.000777" iyy="6.7e-05" izz="0.000798" ixy="5.2e-05" iyz="-5.4e-05" ixz="5e-06"/>
+    </inertial>
+    <visual>
+      <origin xyz="-0.0462 0.01425 -0.4235" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/link_7.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="silver"/>
+    </visual>
+    <collision>
+      <origin xyz="-0.0462 0.01425 -0.4235" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/link_7.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="base_to_one" type="revolute">
+    <origin xyz="0.047 0.00025 0.037" rpy="0 0 0"/>
+    <parent link="base_link"/>
+    <child link="link_1_1"/>
+    <axis xyz="0.0 0.0 1.0"/>
+    <limit lower="-2.967" upper="2.967" effort="100.0" velocity="2.5"/>
+  </joint>
+  <joint name="one_to_two" type="revolute">
+    <origin xyz="-0.019 0.0 0.06975" rpy="0 0 0"/>
+    <parent link="link_1_1"/>
+    <child link="link_2_1"/>
+    <axis xyz="-1.0 0.0 0.0"/>
+    <limit lower="-2.967" upper="2.967" effort="100.0" velocity="2.5"/>
+  </joint>
+  <joint name="two_to_three" type="revolute">
+    <origin xyz="0.0191 0.0 0.07075" rpy="0 0 0"/>
+    <parent link="link_2_1"/>
+    <child link="link_3_1"/>
+    <axis xyz="0.0 0.0 1.0"/>
+    <limit lower="-2.967" upper="2.967" effort="100.0" velocity="2.5"/>
+  </joint>
+  <joint name="three_to_four" type="revolute">
+    <origin xyz="-0.019 0.0 0.07875" rpy="0 0 0"/>
+    <parent link="link_3_1"/>
+    <child link="link_4_1"/>
+    <axis xyz="-1.0 0.0 0.0"/>
+    <limit lower="-2.967" upper="2.967" effort="60.0" velocity="2.5"/>
+  </joint>
+  <joint name="four_to_five" type="revolute">
+    <origin xyz="0.0191 0.0 0.06875" rpy="0 0 0"/>
+    <parent link="link_4_1"/>
+    <child link="link_5_1"/>
+    <axis xyz="0.0 0.0 1.0"/>
+    <limit lower="-2.967" upper="2.967" effort="60.0" velocity="3.0"/>
+  </joint>
+  <joint name="five_to_six" type="revolute">
+    <origin xyz="-0.016 0.0 0.062" rpy="0 0 0"/>
+    <parent link="link_5_1"/>
+    <child link="link_6_1"/>
+    <axis xyz="1.0 0.0 0.0"/>
+    <limit lower="-2.967" upper="2.967" effort="30.0" velocity="3.0"/>
+  </joint>
+  <joint name="six_to_seven" type="revolute">
+    <origin xyz="0.015 -0.0145 0.0365" rpy="0 0 0"/>
+    <parent link="link_6_1"/>
+    <child link="link_7_1"/>
+    <axis xyz="0.0 -1.0 0.0"/>
+    <limit lower="-3.1415" upper="3.1415" effort="30.0" velocity="3.0"/>
+  </joint>
+</robot>
