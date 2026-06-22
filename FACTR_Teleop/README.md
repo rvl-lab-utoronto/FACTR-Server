@@ -15,17 +15,18 @@
 ```mermaid
 graph LR
     %% Nodes definition
-
-    subgraph B [Factr Firmware]
-        A[Factr]
+    subgraph F [FastAPI]
+        subgraph B [Factr Firmware]
+            A[Factr]
+        end
     end
-    C([ROS2 Topics])
+    C([Internet])
     subgraph E [Flexiv SDK]
         D[Rizon 4S]
     end
 
     %% Connections
-    B <--> C
+    F <--> C
     C <--> E
     
     %% Styling (Optional)
