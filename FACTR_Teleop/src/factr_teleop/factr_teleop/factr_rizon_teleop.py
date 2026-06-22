@@ -12,10 +12,14 @@ import threading
 from std_msgs.msg import String
 from sensor_msgs.msg import JointState # from ROS2
 
+# -- FastAPI 
+# from fact import FACTRAPI
+
 from factr_teleop.factr_teleop import FACTRTeleop
 
 import numpy as np
 import time
+print("hello world")
 
 class FactrRizonTeleop(FACTRTeleop):
     def __init__(self):
@@ -80,6 +84,8 @@ class FactrRizonTeleop(FACTRTeleop):
 
 
 def main(args=None):
+    # app = FastAPI()
+
     rclpy.init(args=args)
     FRT= FactrRizonTeleop() # single thread is sufficient since it's only publishing messages. 
 
