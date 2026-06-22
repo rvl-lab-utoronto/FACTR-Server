@@ -37,15 +37,16 @@ class FactrRizonTeleop(FACTRTeleop):
         """
         self.gripper_pos_prev = self.gripper_pos
         joint_pos, joint_vel = self.driver.get_positions_and_velocities()
+        print("joint_pos ABABABAB: ", joint_pos)
         return joint_pos
 
 
-    # def control_loop_callback(self):
-    #     """
-    #     Override the control loop callback from FACTRTeleop. This is being called at 500Hz
-    #     """
-    #     joint_pos = self.get_leader_joint_pos()
-    #     self.joint_positions = joint_pos
+    def control_loop_callback(self):
+        """
+        Uncomment this function if you just want to see the joint positions!
+        """
+        joint_pos = self.get_leader_joint_pos()
+        self.joint_positions = joint_pos
 
     
     def publish_joint_pos(self):
