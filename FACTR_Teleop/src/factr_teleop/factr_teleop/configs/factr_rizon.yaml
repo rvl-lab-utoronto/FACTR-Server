@@ -15,12 +15,14 @@ arm_teleop:
   # URDF used for creating leader arm dynamics model to compute gravity compensation
   leader_urdf: "FlexivRizon.urdf" # TODO
   num_arm_joints: 7
-  arm_joint_limits_max: [4.5, 4.131, 6, 6, 5, 7.77, 3.32] 
+  arm_joint_limits_max: [4.5, 4.131, 6, 6, 5, 7.77, 3.32]  
   arm_joint_limits_min: [-0.5, -4.5, -3, -6, -4, -4, -3.32] # THIS DOES NOT INCLUDE THE TRIGGER!  
   arm_joint_limits_safety_margin: 0.1
   initialization:
     # The expected leader arm jo0int position before launching the script
-    calibration_joint_pos: [0., -0, 0.0, 0, 0, 0, 0]
+    calibration_joint_pos: [0., -0, 0.0, 0, 0, 0, 0] 
+    # The arm needs to be held in a certain position before launching!
+    # More information in the README.md file!
     # The leader arm must be brought to this joint position before the follower starts mirroring the leader
     initial_match_joint_pos: [0.0, -0, 0.0, 0, 0, 0, 0]
   
