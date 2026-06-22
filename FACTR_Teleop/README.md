@@ -9,6 +9,7 @@
 - [Communication Diagram](#communication-diagram)
 - [Installation](#installation)
 - [FACTR Teleop](#factr-teleop)
+- [Troubleshooting](#troubleshooting)
 
 
 ## Communication Diagram
@@ -97,4 +98,9 @@ To publish just the joint positions via ROS2:
 
 NOTE: the current gravity compensation model is built on top of the FACTR-Franka setup, our FACTR-Rizon setup has different arm proportions that need to be updated.
 
+
+# Troubleshooting
+If you run into this problem: `FileNotFoundError: [Errno 2] No such file or directory: '~/your_working_directory/src/factr_teleop/factr_teleop/configs/factr_rizon.yaml'` 
+
+That means you are not in the right directory, run `cd ~/your_working_directory/FACTR_Teleop`
 
