@@ -45,9 +45,10 @@ If you run into errors while running the code (i.e., missing dependencies) downl
 
 ### ROS 2 Packages
 
-There are four ROS 2 packages in this repository:
+There are five ROS 2 packages in this repository:
 
-- `factr_teleop`
+- `factr_teleop` communication with the Dynamixel servos
+- `factr_fastapi` 
 - `bc`
 - `cameras`
 - `python_utils`
