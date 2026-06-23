@@ -26,7 +26,7 @@ class FactrAPI(Node):
         super().__init__("factr_api")
         group_b = MutuallyExclusiveCallbackGroup()
         self.joint_subscriber = self.create_subscription(JointState, '/joint_pos', self.update_joint_pos, 10, callback_group = group_b)
-        self.joint_pos: list[float] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        self.joint_pos: list[float] = [0.0, 0.0, 0.0, 3.12, 0.0, 0.0, 0.0, 0.0]
 
 
     @app.get("/get_joint_positions", response_model=JointResponse)
