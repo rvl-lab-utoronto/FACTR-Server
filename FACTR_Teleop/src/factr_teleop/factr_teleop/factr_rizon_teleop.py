@@ -19,7 +19,6 @@ from factr_teleop.factr_teleop import FACTRTeleop
 
 import numpy as np
 import time
-print("hello world")
 
 class FactrRizonTeleop(FACTRTeleop):
     def __init__(self):
@@ -45,12 +44,13 @@ class FactrRizonTeleop(FACTRTeleop):
         return joint_pos
 
 
-    # def control_loop_callback(self):
-    #     """
-    #     Uncomment this function if you just want to see the joint positions!
-    #     """
-    #     joint_pos = self.get_leader_joint_pos()
-    #     self.joint_positions = joint_pos
+    def control_loop_callback(self):
+        """
+        Uncomment this function if you just want to see the joint positions!
+        """
+        print("hello world")
+        joint_pos = self.get_leader_joint_pos()
+        self.joint_positions = joint_pos
 
     
     def publish_joint_pos(self):
@@ -84,8 +84,6 @@ class FactrRizonTeleop(FACTRTeleop):
 
 
 def main(args=None):
-    # app = FastAPI()
-
     rclpy.init(args=args)
     FRT= FactrRizonTeleop() # single thread is sufficient since it's only publishing messages. 
 

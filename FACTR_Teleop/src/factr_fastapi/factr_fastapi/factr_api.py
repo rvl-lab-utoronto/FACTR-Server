@@ -1,52 +1,72 @@
-import threading
+# 2026 Jun 23
 
+# -- ROS2 -- 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
+import threading
+from sensor_msgs.msg import JointState
 
+# -- FastAPI -- 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from pydantic import BaseModel
 
 
 app = FastAPI()
 
 
-class PrintResponse(BaseModel):
-    msg: str
+class JointResponse(BaseModel):
+    joint_pos: list[float]
 
 
-class PrintPublisher(Node):
+class FactrAPI(Node):
     def __init__(self):
-        super().__init__("print_publisher")
-        self.publisher_ = self.create_publisher(String, "print", 10)
-        self.i = 0
+        super().__init__("factr_api")
+        group_b = MutuallyExclusiveCallbackGroup()
+        self.joint_subscriber = self.create_subscription(JointState, '/joint_pos', self.update_joint_pos, 10, callback_group = group_b)
+        self.joint_pos: list[float] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
-        @app.get("/topics/print", response_model=PrintResponse)
-        async def publish_print():
-            response = PrintResponse(msg="")
 
-            msg = String()
-            msg.data = f"Hello World: {self.i}"
-            self.get_logger().info(
-                f'Publishing "{msg.data}" to topic "{self.publisher_.topic_name}"'
-            )
-            self.publisher_.publish(msg)
-            self.i += 1
+    @app.get("/get_joint_positions", response_model=JointResponse)
+    async def get_joint_positions(request: Request):
+        """
+        GET endpoint: returns the current joint positions of the 7 joints and the gripper of the FACTR leader.  
+        """
+        node = request.app.state.node 
+        response = JointResponse(joint_pos=node.joint_pos)
+        node.get_logger().info("new joint position request")
+        return response
 
-            message = f'Message "{msg.data}" published to topic "{self.publisher_.topic_name}"'
-            self.get_logger().info(message)
 
-            response.msg = message
-            return response
+    def update_joint_pos(self, msg):
+        print(msg.position)
+        self.joint_pos = list(msg.position)
+
+
+def ros2_multithread(node):
+    """ Need this function to run multithread """
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
+    executor.spin()
+
+    executor.shutdown()
+    node.destroy_node()
+    rclpy.shutdown()
 
 
 def main(args=None):
     rclpy.init()
-    print_publisher = PrintPublisher()
-    spin_thread = threading.Thread(target=rclpy.spin, args=(print_publisher,))
-    spin_thread.start()
+    factrapi = FactrAPI()
+    app.state.node = factrapi  # acting like self
+
+    ros_thread = threading.Thread(target=ros2_multithread, args=(factrapi,), daemon=True)
+    ros_thread.start()
+
     uvicorn.run(app, port=5000, log_level="warning")
+
+    ros_thread.destroy_node()
     rclpy.shutdown()
 
 

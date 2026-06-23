@@ -1,0 +1,6 @@
+source;share/factr_fastapi/hook/pythonpath.ps1
+source;share/factr_fastapi/hook/pythonpath.dsv
+source;share/factr_fastapi/hook/pythonpath.sh
+source;share/factr_fastapi/hook/ament_prefix_path.ps1
+source;share/factr_fastapi/hook/ament_prefix_path.dsv
+source;share/factr_fastapi/hook/ament_prefix_path.sh

@@ -45,10 +45,11 @@ If you run into errors while running the code (i.e., missing dependencies) downl
 
 ### ROS 2 Packages
 
-There are five ROS 2 packages in this repository:
+There are six ROS 2 packages in this repository:
 
 - `factr_teleop` communication with the Dynamixel servos
 - `factr_fastapi` 
+- `factr_interface`
 - `bc`
 - `cameras`
 - `python_utils`
@@ -87,17 +88,22 @@ Then:
 
 ## FACTR Teleop
 
-To publish just the joint positions via ROS2:
+   (FACTR data collection)
 
    1, Navigate to the root folder of your workspace
    
-   2, run `source install/setup.bash`
+   2, run `source install/setup.bash` 
    
-   3, run `colcon build`
+   3, run `colcon build` 
    
    4, run `ros2 run factr_teleop factr_rizon_testing`
 
-NOTE: the current gravity compensation model is built on top of the FACTR-Franka setup, our FACTR-Rizon setup has different arm proportions that need to be updated.
+   (FastAPI wrapper)
+
+   5, run `poetry run python -m src.factr_fastapi.factr_fastapi.factr_api`
+
+NOTE: the current gravity compensation model assumes a uniform mass distribution and is made of plastic.
+
 
 
 # Troubleshooting
