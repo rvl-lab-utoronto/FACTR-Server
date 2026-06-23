@@ -59,8 +59,8 @@ class FactrRizonTeleop(FACTRTeleop):
         msg.name = [f'joint_{i}' for i in range(7)]
 
         msg.position = self.joint_positions.tolist()   # np.array -> list[float]
-        msg.velocity = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        print(f"Publishing joint positions: {self.joint_positions}")
+        msg.velocity = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] 
+        print(f"Publishing joint positions: {self.joint_positions} skibidi")
         self.joint_pos_publisher.publish(msg)
 
         

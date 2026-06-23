@@ -390,13 +390,13 @@ class FACTRTeleop(Node, ABC):
         the null space of the task Jacobian to achieve secondary objectives without 
         affecting the primary task.
         """
-        print("START")
-        print(self.pin_model, self.pin_data, arm_joint_pos, self.num_arm_joints)
-        print("FINSIHED")
+        # print("START")
+        # print(self.pin_model, self.pin_data, arm_joint_pos, self.num_arm_joints)
+        # print("FINSIHED")
         J = pin.computeJointJacobian(
             self.pin_model, self.pin_data, arm_joint_pos, self.num_arm_joints
         )
-        print("FINSIHED")
+        # print("FINSIHED")
         J_dagger = np.linalg.pinv(J)
         null_space_projector = np.eye(self.num_arm_joints) - J_dagger @ J
         q_error = arm_joint_pos - self.null_space_joint_target[0:self.num_arm_joints]
