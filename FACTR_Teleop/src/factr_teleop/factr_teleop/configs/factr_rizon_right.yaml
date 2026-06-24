@@ -13,7 +13,7 @@ dynamixel:
   
 arm_teleop:
   # URDF used for creating leader arm dynamics model to compute gravity compensation
-  leader_urdf: "FlexivRizon.urdf" # TODO
+  leader_urdf: "flexivv3_jointconfig.urdf" # TODO
   num_arm_joints: 7
   arm_joint_limits_max: [4.5, 4.131, 6, 6, 5, 7.77, 3.32]  
   arm_joint_limits_min: [-0.5, -4.5, -3, -6, -4, -4, -3.32] # THIS DOES NOT INCLUDE THE TRIGGER!  

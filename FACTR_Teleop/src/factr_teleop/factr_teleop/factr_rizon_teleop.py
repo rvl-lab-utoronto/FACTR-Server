@@ -35,7 +35,7 @@ class FactrRizonTeleop(FACTRTeleop):
         else:
             # right arm
             self.joint_pos_publisher = self.publisher_ = self.create_publisher(JointState, '/joint_pos_right', 10, callback_group=self.group_a)
-            
+
         self.create_timer(0.002, self.publish_joint_pos, callback_group=self.group_b)
         # publish joint_pos every 2ms
 
@@ -60,7 +60,6 @@ class FactrRizonTeleop(FACTRTeleop):
         self.joint_positions = joint_pos
 
 
-    
     def publish_joint_pos(self):
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -91,6 +90,12 @@ class FactrRizonTeleop(FACTRTeleop):
 
 
 def main(args=None):
+    # before running this file, goto factr_rizon_left.yaml and factr_rizon_right.yaml
+    # change dynamixel_port: "xxxx_xxx" to your USB port!
+
+    # print("modify your USB port first!") 
+    # return # if you have done so, comment this line!
+
     rclpy.init(args=args)
     left_factr = FactrRizonTeleop(0)  
     # right_factr = FactrRizonTeleop(1)   
