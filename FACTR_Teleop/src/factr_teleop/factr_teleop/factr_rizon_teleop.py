@@ -21,15 +21,21 @@ import numpy as np
 import time
 
 class FactrRizonTeleop(FACTRTeleop):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, arm_index: int):
+        super().__init__(arm_index)
         self.joint_positions = np.zeros(7)
         self.joint_velocities = np.zeros(7) # later
 
         self.group_a = MutuallyExclusiveCallbackGroup()
         self.group_b = MutuallyExclusiveCallbackGroup()
 
-        self.joint_pos_publisher = self.publisher_ = self.create_publisher(JointState, '/joint_pos', 10, callback_group=self.group_a)
+        if arm_index == 0:
+            # left arm
+            self.joint_pos_publisher = self.publisher_ = self.create_publisher(JointState, '/joint_pos_left', 10, callback_group=self.group_a)
+        else:
+            # right arm
+            self.joint_pos_publisher = self.publisher_ = self.create_publisher(JointState, '/joint_pos_right', 10, callback_group=self.group_a)
+            
         self.create_timer(0.002, self.publish_joint_pos, callback_group=self.group_b)
         # publish joint_pos every 2ms
 
@@ -40,17 +46,19 @@ class FactrRizonTeleop(FACTRTeleop):
         """
         self.gripper_pos_prev = self.gripper_pos
         joint_pos, joint_vel = self.driver.get_positions_and_velocities()
-        print("joint_pos ABABABAB: ", joint_pos)
         return joint_pos
 
 
-    # def control_loop_callback(self):
-    #     """
-    #     Uncomment this function if you just want to see the joint positions!
-    #     """
-    #     joint_pos = self.get_leader_joint_pos()
-    #     self.joint_positions = joint_pos
-        
+    def control_loop_callback(self):    
+        """
+        Additional control loop feature: update the joint positions of one of the leader arms (left or right), runs at 500Hz
+        """
+        super().control_loop_callback() 
+
+        # update joint positions
+        joint_pos = self.get_leader_joint_pos()
+        self.joint_positions = joint_pos
+
 
     
     def publish_joint_pos(self):
@@ -60,12 +68,10 @@ class FactrRizonTeleop(FACTRTeleop):
 
         msg.position = self.joint_positions.tolist()   # np.array -> list[float]
         msg.velocity = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] 
-        print(f"Publishing joint positions: {self.joint_positions} skibidi")
+        self.get_logger().info(f"publishing joint positions: {self.joint_positions}")
         self.joint_pos_publisher.publish(msg)
 
         
-
-
     def set_up_communication(self):
         pass
         
@@ -79,16 +85,19 @@ class FactrRizonTeleop(FACTRTeleop):
         pass
 
     def update_communication(self, leader_arm_pos, leader_gripper_pos):
+        # use publish_joint_pos() instead
         pass
         
 
 
 def main(args=None):
     rclpy.init(args=args)
-    FRT= FactrRizonTeleop() # single thread is sufficient since it's only publishing messages. 
+    left_factr = FactrRizonTeleop(0)  
+    # right_factr = FactrRizonTeleop(1)   
 
     executor = MultiThreadedExecutor() # mutli thread needed
-    executor.add_node(FRT)
+    executor.add_node(left_factr)
+    # executor.add_node(right_factr)
     executor.spin()
 
     rclpy.shutdown()

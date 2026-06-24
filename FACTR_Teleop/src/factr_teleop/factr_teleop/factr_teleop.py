@@ -64,10 +64,19 @@ class FACTRTeleop(Node, ABC):
     methods must be implemented by subclasses for handling communication between the 
     leader and follower arms, as well as force-feedback for the leader gripper.
     """
-    def __init__(self):
-        super().__init__('factr_teleop')
+    def __init__(self, arm_index: int):
+        super().__init__(f'factr_teleop_{arm_index}')
 
-        config_file_name = self.declare_parameter('config_file', 'factr_rizon_left.yaml').get_parameter_value().string_value
+        if arm_index not in [0, 1]:
+            self.get_logger().error("please specify arm_index as 0 (left) or 1 (right)")
+
+        if arm_index == 0:
+            # left arm
+            config_file_name = self.declare_parameter('config_file', 'factr_rizon_left.yaml').get_parameter_value().string_value
+        else:
+            # right arm
+            config_file_name = self.declare_parameter('config_file', 'factr_rizon_right.yaml').get_parameter_value().string_value
+
         config_path = os.path.join(get_workspace_root(), f"src/factr_teleop/factr_teleop/configs/{config_file_name}")
         with open(config_path, 'r') as config_file:
             self.config = yaml.safe_load(config_file)
@@ -390,15 +399,9 @@ class FACTRTeleop(Node, ABC):
         the null space of the task Jacobian to achieve secondary objectives without 
         affecting the primary task.
         """
-        # print("START")
-        # print(self.pin_model, self.pin_data, arm_joint_pos, self.num_arm_joints)
-        # print("FINSIHED")
-        print(arm_joint_pos)
-        print("AAN", self.pin_model, "HE", self.pin_data, arm_joint_pos, self.num_arm_joints)
         J = pin.computeJointJacobian(
             self.pin_model, self.pin_data, arm_joint_pos, self.num_arm_joints
         )
-        # print("FINSIHED")
         J_dagger = np.linalg.pinv(J)
         null_space_projector = np.eye(self.num_arm_joints) - J_dagger @ J
         q_error = arm_joint_pos - self.null_space_joint_target[0:self.num_arm_joints]
