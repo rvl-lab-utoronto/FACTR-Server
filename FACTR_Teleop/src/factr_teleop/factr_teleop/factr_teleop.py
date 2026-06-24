@@ -67,7 +67,7 @@ class FACTRTeleop(Node, ABC):
     def __init__(self):
         super().__init__('factr_teleop')
 
-        config_file_name = self.declare_parameter('config_file', 'factr_rizon.yaml').get_parameter_value().string_value
+        config_file_name = self.declare_parameter('config_file', 'factr_rizon_left.yaml').get_parameter_value().string_value
         config_path = os.path.join(get_workspace_root(), f"src/factr_teleop/factr_teleop/configs/{config_file_name}")
         with open(config_path, 'r') as config_file:
             self.config = yaml.safe_load(config_file)
@@ -393,6 +393,8 @@ class FACTRTeleop(Node, ABC):
         # print("START")
         # print(self.pin_model, self.pin_data, arm_joint_pos, self.num_arm_joints)
         # print("FINSIHED")
+        print(arm_joint_pos)
+        print("AAN", self.pin_model, "HE", self.pin_data, arm_joint_pos, self.num_arm_joints)
         J = pin.computeJointJacobian(
             self.pin_model, self.pin_data, arm_joint_pos, self.num_arm_joints
         )

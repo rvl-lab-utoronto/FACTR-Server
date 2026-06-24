@@ -44,13 +44,13 @@ class FactrRizonTeleop(FACTRTeleop):
         return joint_pos
 
 
-    def control_loop_callback(self):
-        """
-        Uncomment this function if you just want to see the joint positions!
-        """
-        print("hello world")
-        joint_pos = self.get_leader_joint_pos()
-        self.joint_positions = joint_pos
+    # def control_loop_callback(self):
+    #     """
+    #     Uncomment this function if you just want to see the joint positions!
+    #     """
+    #     joint_pos = self.get_leader_joint_pos()
+    #     self.joint_positions = joint_pos
+        
 
     
     def publish_joint_pos(self):
