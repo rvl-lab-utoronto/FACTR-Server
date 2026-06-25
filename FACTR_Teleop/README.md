@@ -7,6 +7,7 @@
 
 ## Catalog
 - [Communication Diagram](#communication-diagram)
+- [ROS2 Packages](#ros2-packages)
 - [Installation](#installation)
 - [FACTR Teleop](#factr-teleop)
 - [Troubleshooting](#troubleshooting)
@@ -35,9 +36,10 @@ graph LR
 ```
 
 ## Installation
+This code uses ROS2 Humble, adapt the commands if using different versions (e.g., Jazzy, Lyrical...)
 - Install [ROS2-Humble](https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html), for more guidance, refer to their website
     - Set Locale
-      ```
+      ```bash
       locale  # check for UTF-8
       sudo apt update && sudo apt install locales
       sudo locale-gen en_US en_US.UTF-8
@@ -47,7 +49,7 @@ graph LR
       locale  # verify settings
       ```
     - Setup Sources
-      ```
+      ```bash
       sudo apt install software-properties-common
       sudo add-apt-repository universe
 
@@ -57,7 +59,7 @@ graph LR
       sudo dpkg -i /tmp/ros2-apt-source.deb
       ```
     - Install ROS2
-      ```
+      ```bash
       sudo apt update
       sudo apt upgrade
 
@@ -67,9 +69,20 @@ graph LR
 - Download this repo to a workspace (i.e., a directory): `git clone https://github.com/rvl-lab-utoronto/FACTR-Server.git`
     - i.e., `<workspace_name>/FACTR_Teleop`
 
-
-
-- Follow the setup guide in [FACTR_Teleop](https://github.com/JasonJZLiu/FACTR_Teleop/README.md)
+- Install additional Python dependencies. For more guidance, refer to the setup guide in [FACTR_Teleop](https://github.com/JasonJZLiu/FACTR_Teleop/README.md) 
+  - Install [ZMQ](https://zeromq.org/):
+      ```bash
+      pip install zmq
+      ```
+  - Install [Pinocchio](https://stack-of-tasks.github.io/pinocchio/):
+      ```bash
+      sudo apt install ros-humble-pinocchio
+      ```
+  - Install the Dynamixel driver:
+      ```bash
+      cd <workspace_name>/FACTR_Teleop/src/factr_teleop/factr_teleop/dynamixel
+      pip install -e python
+      ```
 - We will not be using Dynamixel Wizard!
 
 
@@ -86,15 +99,16 @@ There are five ROS 2 packages in this repository:
 you can find them in `/src`
 
 
-### ROS 2 Workspace Setup
+### ROS 2
 
 These packages must reside within a **ROS 2 workspace**. If you do not already have one, create a workspace by following the [ROS 2 workspace tutorial](https://docs.ros.org/en/humble/Tutorials/Beginner-Client-Libraries/Creating-A-Workspace/Creating-A-Workspace.html).
 
 Then:
 
-2. Ensure to source the ROS2 setup script in your terminal
+2. Source every terminal before using ROS2
    ```bash
-   source /opt/ros/humble/setup.bash # or zsh
+   
+   source /opt/ros/humble/setup.bash 
    ```
    Note that this command should be run everytime you open a new terminal.
 3. From the root of your workspace, build the workspace via:
