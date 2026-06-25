@@ -32,6 +32,8 @@ class FactrAPI(Node):
         self.joint_pos_left: list[float] = [0.0, 0.0, 0.0, 3.12, 0.0, 0.0, 0.0, 0.0]
         self.joint_pos_right: list[float] = [0.0, 0.0, 0.0, 3.12, 0.0, 0.0, 0.0, 0.0]
 
+        self.lock = Threading.Lock()
+
 
     @app.get("/get_joint_positions_left", response_model=JointResponse)
     async def get_joint_positions(request: Request):
@@ -45,10 +47,12 @@ class FactrAPI(Node):
 
 
     def update_joint_pos_left(self, msg):
-        self.joint_pos_left = list(msg.position)
+        with self.lock:
+            self.joint_pos_left = list(msg.position)
 
     def update_joint_pos_right(self, msg):
-        self.joint_pos_right = list(msg.position)
+        with self.lock:
+            self.joint_pos_right = list(msg.position)
 
 
 def ros2_multithread(node):
