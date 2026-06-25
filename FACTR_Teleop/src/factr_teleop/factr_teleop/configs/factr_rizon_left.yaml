@@ -28,7 +28,7 @@ arm_teleop:
   
 gripper_teleop:
   # The maximum range (in rad) of the leader gripper trigger
-  actuation_range: 1.57
+  actuation_range: 10
 
 controller:
   frequency: 500
