@@ -38,7 +38,6 @@ graph LR
 If you run into errors while running the code (i.e., missing dependencies) download the missing stuff along the way. can't help ya ☝️
 - Install [ROS2-Humble](https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html)
 - Download this repo to a workspace (i.e., a dir): `git clone https://github.com/rvl-lab-utoronto/force-vla.git`
-- Switch to branch FactrRizonTeleop
 - Follow the setup guide in [FACTR_Teleop](https://github.com/JasonJZLiu/FACTR_Teleop/README.md)
 - We will not be using Dynamixel Wizard!
 
@@ -99,6 +98,8 @@ Then:
    4, run `ros2 run factr_teleop factr_rizon_testing`
 
    (FastAPI wrapper)
+
+   5, run `source install/setup.bash`
 
    5, run `poetry run python -m src.factr_fastapi.factr_fastapi.factr_api`
 

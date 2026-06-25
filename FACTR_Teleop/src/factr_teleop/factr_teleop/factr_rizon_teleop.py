@@ -39,6 +39,8 @@ class FactrRizonTeleop(FACTRTeleop):
         self.create_timer(0.002, self.publish_joint_pos, callback_group=self.group_b)
         # publish joint_pos every 2ms
 
+        self.lock = threading.Lock()
+
 
     def get_leader_joint_pos(self):
         """
@@ -65,9 +67,21 @@ class FactrRizonTeleop(FACTRTeleop):
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.name = [f'joint_{i}' for i in range(7)]
 
-        msg.position = self.joint_positions.tolist()   # np.array -> list[float]
+        with self.lock:
+            positions = self.joint_positions.tolist()   # np.array -> list[float]
+            msg.position = positions
+
         msg.velocity = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] 
-        self.get_logger().info(f"publishing joint positions: {self.joint_positions}")
+
+        if len(positions) < 8:
+            self.get_logger().info("motors not ready")
+        else:   
+            # for testing
+            print("\033[H\033[2J", end="")
+
+            for i in range(8):
+                print(f"A{i}: {positions[i]}")
+
         self.joint_pos_publisher.publish(msg)
 
         
