@@ -35,6 +35,19 @@ graph LR
     style C fill:#f9f,stroke:#333,stroke-width:2px
 ```
 
+## ROS 2 Packages
+
+There are five ROS 2 packages in this repository:
+
+- `factr_teleop` communication with the Dynamixel servos
+- `factr_fastapi` FastAPI endpoints
+- `bc`
+- `cameras`
+- `python_utils`
+
+you can find them in `/src`
+
+
 ## Installation
 This code uses ROS2 Humble, adapt the commands if using different versions (e.g., Jazzy, Lyrical...)
 - Install [ROS2-Humble](https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html), for more guidance, refer to their website
@@ -84,19 +97,6 @@ This code uses ROS2 Humble, adapt the commands if using different versions (e.g.
       pip install -e python
       ```
 - We will not be using Dynamixel Wizard!
-
-
-### ROS 2 Packages
-
-There are five ROS 2 packages in this repository:
-
-- `factr_teleop` communication with the Dynamixel servos
-- `factr_fastapi` FastAPI endpoints
-- `bc`
-- `cameras`
-- `python_utils`
-
-you can find them in `/src`
 
 
 ### ROS 2
