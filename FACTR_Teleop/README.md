@@ -10,6 +10,7 @@
 - [ROS2 Packages](#ros2-packages)
 - [Installation](#installation)
 - [FACTR Teleop](#factr-teleop)
+- [FACTR Rizon Hardware](#factr-rizon-hardware)
 - [Troubleshooting](#troubleshooting)
 
 
@@ -23,8 +24,8 @@ graph LR
         end
     end
     C([Internet])
-    subgraph E [Flexiv SDK]
-        D[Rizon 4S]
+    subgraph E [Follower SDK]
+        D[Follower]
     end
 
     %% Connections
@@ -35,8 +36,7 @@ graph LR
     style C fill:#f9f,stroke:#333,stroke-width:2px
 ```
 
-## ROS 2 Packages
-
+## ROS2 Packages
 There are five ROS 2 packages in this repository:
 
 - `factr_teleop` communication with the Dynamixel servos
@@ -49,7 +49,7 @@ you can find them in `/src`
 
 
 ## Installation
-This code uses ROS2 Humble, adapt the commands if using different versions (e.g., Jazzy, Lyrical...)
+This code uses ROS2 Humble. Replace Humble with the version installed on your system if you are using a different ROS 2 release (e.g., Jazzy, Lyrical, etc.).
 - Install [ROS2-Humble](https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html), for more guidance, refer to their website
     - Set Locale
       ```bash
@@ -99,41 +99,27 @@ This code uses ROS2 Humble, adapt the commands if using different versions (e.g.
 - We will not be using Dynamixel Wizard!
 
 
-### ROS 2
-
+### ROS 2 Command
 These packages must reside within a **ROS 2 workspace**. If you do not already have one, create a workspace by following the [ROS 2 workspace tutorial](https://docs.ros.org/en/humble/Tutorials/Beginner-Client-Libraries/Creating-A-Workspace/Creating-A-Workspace.html).
 
 Then:
 
-2. Source every terminal before using ROS2
+1. Source every terminal before using ROS2
    ```bash
-   
-   source /opt/ros/humble/setup.bash 
+   source install/setup.bash
+   source /opt/ros/humble/setup.bash
    ```
-   Note that this command should be run everytime you open a new terminal.
-3. From the root of your workspace, build the workspace via:
+2. Navigate to `FACTR_Teleop/`, build the workspace via (run this everytime you make changes to the files):
    ```bash
    colcon build 
    ```
-   This should create the following folders in your workspace root
-   ```bash
-   build  install  log  src
-   ```
-4. From the root of your workspace, source the overlay via
-   ```bash
-   source install/local_setup.bash # or zsh
-   ```
-   Note that this command should also be run everytime you open a new terminal.
-
-> For more guidance, refer to the [ROS 2 Tutorial](https://docs.ros.org/en/humble/Tutorials/Beginner-Client-Libraries/Creating-A-Workspace/Creating-A-Workspace.html).
-
 
 
 ## FACTR Teleop
 
-   (FACTR data collection)
+   To start the main control loop, collect FACTR arm joint data, and enable gravity compensation:
 
-   1, `cd FACTR_Teleop`
+   1, `cd <workspace_name>/FACTR_Teleop/`
    
    2, run `source install/setup.bash` 
    
@@ -141,18 +127,22 @@ Then:
    
    4, run `ros2 run factr_teleop factr_rizon_testing`
 
-   (FastAPI wrapper)
+   In the meantime, if you want to publish the joint positions to `https://localhost:5000:`
 
    5, run `source install/setup.bash`
 
    6, run `poetry run python -m src.factr_fastapi.factr_fastapi.factr_api`
 
-NOTE: the current gravity compensation model assumes a uniform mass distribution and is made of plastic.
+Fix: the current gravity compensation model does not assume a uniform mass distribution.
 
 
+## FACTR Rizon Hardware
+The URDF file for the FACTR-Rizon setup could be found in `<workspace_name>/FACTR_Teleop/src/factr_teleop/factr_teleop/urdf/flexivv3_jointconfig.urdf`
 
-# Troubleshooting
-1, If you run into this problem: `FileNotFoundError: [Errno 2] No such file or directory: '~/your_working_directory/src/factr_teleop/factr_teleop/configs/factr_rizon.yaml'` 
+
+## Troubleshooting
+1. If you run into this problem: `FileNotFoundError: [Errno 2] No such file or directory: '~/your_working_directory/src/factr_teleop/factr_teleop/configs/factr_rizon.yaml'` 
 
 That means you are not in the right directory, run `cd ~/your_working_directory/FACTR_Teleop`
 
+2. This project uses older versions of Python and NumPy. If you encounter compatibility errors, downgrade your system's Python and Numpy accordingly.
