@@ -116,6 +116,7 @@ Then:
 
 
 ## FACTR Teleop
+Make sure that your U2D2 Power Hub Board is connected to your computer. Then, navigate to `<workspace_name>/FACTR_Teleop/src/factr_teleop/factr_teleop/configs/`. Locate the `factr_rizon_left.yaml` and `factr_rizon_right.ymal` files, change the `dynamixel_port` parameter on line 5 to the corresponding USB port. 
 
    To start the main control loop, collect FACTR arm joint data, and enable gravity compensation:
 
