@@ -20,6 +20,12 @@ import numpy as np
 import time
 import math
 
+def rad_to_deg_signed(rad):
+        deg = math.degrees(rad) % 360
+        if deg > 180:
+            deg -= 360
+        return deg
+
 class FactrRizonTeleop(FACTRTeleop):
     def __init__(self, arm_index: int):
         super().__init__(arm_index)
@@ -92,11 +98,6 @@ class FactrRizonTeleop(FACTRTeleop):
         self.joint_pos_publisher.publish(msg)
 
 
-    def rad_to_deg_signed(rad):
-        deg = math.degrees(rad) % 360
-        if deg > 180:
-            deg -= 360
-        return deg
 
         
     def set_up_communication(self):
