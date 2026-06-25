@@ -138,7 +138,7 @@ Make sure that your U2D2 Power Hub Board is connected to your computer. Then, na
 
    In the meantime, if you want to publish the joint positions to `https://localhost:5000:`
 
-   5, run `source install/setup.bash`
+   5, start a new terminal and run `source install/setup.bash`
 
    6, run `poetry run python -m src.factr_fastapi.factr_fastapi.factr_api`
 
