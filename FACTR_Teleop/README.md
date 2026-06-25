@@ -96,6 +96,14 @@ This code uses ROS2 Humble. Replace Humble with the version installed on your sy
       cd <workspace_name>/FACTR_Teleop/src/factr_teleop/factr_teleop/dynamixel
       pip install -e python
       ```
+  - Install [FastAPI](https://fastapi.tiangolo.com/tutorial/#run-the-code):
+      ```bash
+      pip install "fastapi[standard]"
+      ```
+  - Install Poetry:
+      ```bash
+      pip install poetry
+      ```
 - We will not be using Dynamixel Wizard!
 
 
