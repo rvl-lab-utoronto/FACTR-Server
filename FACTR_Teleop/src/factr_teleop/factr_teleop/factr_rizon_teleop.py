@@ -18,6 +18,7 @@ from factr_teleop.factr_teleop import FACTRTeleop
 
 import numpy as np
 import time
+import math
 
 class FactrRizonTeleop(FACTRTeleop):
     def __init__(self, arm_index: int):
@@ -38,6 +39,7 @@ class FactrRizonTeleop(FACTRTeleop):
         self.create_timer(0.002, self.publish_joint_pos, callback_group=self.group_b)
         # publish joint_pos every 2ms
 
+        self.index = arm_index
         self.lock = threading.Lock()
 
 
@@ -78,10 +80,23 @@ class FactrRizonTeleop(FACTRTeleop):
             # for testing
             print("\033[H\033[2J", end="")
 
-            for i in range(8):
-                print(f"A{i}: {positions[i]}")
+            if self.index == 0:
+                arm_name = "left"
+            else:
+                arm_name = "right"
+
+            for i in range(7):
+                print(f"A{i+1} {arm_name}: {rad_to_deg_signed(positions[i])}")
+            print(f"G1 {arm_name}: {rad_to_deg_signed(positions[7])}")
 
         self.joint_pos_publisher.publish(msg)
+
+
+    def rad_to_deg_signed(rad):
+        deg = math.degrees(rad) % 360
+        if deg > 180:
+            deg -= 360
+        return deg
 
         
     def set_up_communication(self):
