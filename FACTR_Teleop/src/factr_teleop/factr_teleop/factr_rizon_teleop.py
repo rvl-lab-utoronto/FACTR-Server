@@ -1,5 +1,4 @@
 # 2026 Jun 18
-# Leo Wang
 
 # -- ROS2 -- 
 import rclpy
