@@ -137,7 +137,8 @@ Fix: the current gravity compensation model does not assume a uniform mass distr
 
 
 ## FACTR Rizon Hardware
-The URDF file for the FACTR-Rizon setup could be found in `<workspace_name>/FACTR_Teleop/src/factr_teleop/factr_teleop/urdf/flexivv3_jointconfig.urdf`
+The URDF file for the FACTR-Rizon setup can be found in `<workspace_name>/FACTR_Teleop/src/factr_teleop/factr_teleop/urdf/flexivv3_jointconfig.urdf`
+
 
 
 ## Troubleshooting
