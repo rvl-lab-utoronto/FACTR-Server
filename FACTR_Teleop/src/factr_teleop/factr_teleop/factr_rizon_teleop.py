@@ -20,6 +20,13 @@ import numpy as np
 import time
 import math
 
+
+"""
+improvements:
+    1, enforce joint limit 
+    2, I think the servos have memories about its joint positions
+"""
+
 def rad_to_deg_signed(rad):
         deg = math.degrees(rad) % 360
         if deg > 180:
@@ -98,8 +105,6 @@ class FactrRizonTeleop(FACTRTeleop):
         self.joint_pos_publisher.publish(msg)
 
 
-
-        
     def set_up_communication(self):
         pass
         

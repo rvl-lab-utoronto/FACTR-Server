@@ -3,6 +3,10 @@
 
 #### Adapted from [FACTR Teleop](https://github.com/JasonJZLiu/FACTR_Teleop)
 
+
+This project allows users to read the joint positions of two FACTR-inspired arms simultaneously (the new design can be found in the Hardware section). The code publishes real-time data to the ROS2 topics `/joint_pos_left` and `/joint_pos_right`.
+
+Users can also enable local HTTP GET endpoints using FastAPI on port 5000, providing a network interface for non-ROS2 projects to access and read the joint positions (refer to the FACTR Teleop section).
 <br>
 
 ## Catalog
@@ -131,9 +135,9 @@ Make sure that your U2D2 Power Hub Board is connected to your computer. Then, na
    1, `cd <workspace_name>/FACTR_Teleop/`
    
    2, run `source install/setup.bash` 
-   
-   3, run `colcon build` 
-   
+
+   3, run `colcon build`
+
    4, run `ros2 run factr_teleop factr_rizon_testing`
 
    In the meantime, if you want to publish the joint positions to `https://localhost:5000:`
@@ -146,6 +150,10 @@ Fix: the current gravity compensation model does not assume a uniform mass distr
 
 
 ## FACTR Rizon Hardware
+The FACTR-inspired arm is designed to teleoperate a Flexiv Rizon 4S, therefore, the link lengths, joint positions are designed to match those of its counterpart. The entire structure is scaled to 3:1, making it suitable for a human operator. 
+
+The motors used are the same as those used in [FACTR](https://github.com/JasonJZLiu/FACTR_Hardware), you can find the Bill of Materials there. 
+
 The URDF file for the FACTR-Rizon setup can be found in `<workspace_name>/FACTR_Teleop/src/factr_teleop/factr_teleop/urdf/flexivv3_jointconfig.urdf`
 
 
@@ -153,6 +161,6 @@ The URDF file for the FACTR-Rizon setup can be found in `<workspace_name>/FACTR_
 ## Troubleshooting
 1. If you run into this problem: `FileNotFoundError: [Errno 2] No such file or directory: '~/your_working_directory/src/factr_teleop/factr_teleop/configs/factr_rizon.yaml'` 
 
-That means you are not in the right directory, run `cd ~/your_working_directory/FACTR_Teleop`
+    That means you are not in the right directory, run `cd ~/your_working_directory/FACTR_Teleop`
 
-2. This project uses older versions of Python and NumPy. If you encounter compatibility errors, downgrade your system's Python and Numpy accordingly.
+2. This project uses older versions of Python (3.10) and NumPy (1.21). If you encounter compatibility errors, downgrade your system's Python and Numpy accordingly.
