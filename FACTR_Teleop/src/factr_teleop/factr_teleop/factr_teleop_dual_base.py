@@ -58,6 +58,8 @@ class FACTRTeleopDualBase(Node, ABC):
         if arm_index not in [0, 1]:
             self.get_logger().error("please specify arm_index as 0 (left) or 1 (right)")
 
+
+        #!BOOKMARK, probably delete
         if arm_index == 0:
             # left arm
             config_file_name = self.declare_parameter('config_file', 'factr_rizon_left.yaml').get_parameter_value().string_value
@@ -166,63 +168,126 @@ class FACTRTeleopDualBase(Node, ABC):
 
     def _prepare_dynamixel(self):
         """
-        Instantiates driver for interfacing with Dynamixel servos.
+        Instantiates the Dynamixel drivers for the small and big power boards.
+
+        Each board is described by its own config section (``dynamixel_small`` and,
+        optionally, ``dynamixel_big``) listing that board's Dynamixel ``ids``,
+        ``servo_types`` and ``joint_signs`` in id order. The two boards are merged
+        into a single full-arm ordering (ascending Dynamixel id) so the rest of the
+        controller can treat the leader arm as one contiguous set of joints.
         """
-        self.servo_types = self.config["dynamixel"]["servo_types"]
-        print(self.servo_types)
-        self.num_motors = len(self.servo_types)
-        self.joint_signs = np.array(self.config["dynamixel"]["joint_signs"], dtype=float)
-        assert self.num_motors == len(self.joint_signs), \
-            "The number of motors and the number of joint signs must be the same"
-        self.dynamixel_port = "/dev/serial/by-id/" + self.config["dynamixel"]["dynamixel_port"]
-        self.dynamixel_port_big = "/dev/serial/by-id/" + "usb-FTDI_USB__-__Serial_Converter_FTA2U2FX-if00-port0"
+        small_cfg = self.config["dynamixel_small"]
+        big_cfg = self.config.get("dynamixel_big") or {}
 
-        # checks of the latency timer on ttyUSB of the corresponding port is 1
-        # if it is not 1, the control loop cannot run at above 200 Hz, which will 
-        # cause extremely undesirable behaviour for the leader arm. If the latency 
-        # timer is not 1, one can set it to 1 as follows:
-        # echo 1 | sudo tee /sys/bus/usb-serial/devices/ttyUSB{NUM}/latency_timer
-        ttyUSBx = find_ttyusb(self.dynamixel_port)
-        ttyUSBx_2 = find_ttyusb(self.dynamixel_port_big)
-        command = f"cat /sys/bus/usb-serial/devices/{ttyUSBx}/latency_timer"        
-        result = subprocess.run(command, shell=True, capture_output=True, text=True, check=True)
-        ttyUSB_latency_timer = int(result.stdout)
-        if ttyUSB_latency_timer != 1:
-            raise Exception(
-                f"Please ensure the latency timer of {ttyUSBx} is 1. Run: \n \
-                echo 1 | sudo tee /sys/bus/usb-serial/devices/{ttyUSBx}/latency_timer"
+        # --- per-board servo tables, each in that board's own id order ---
+        self.small_servo_ids = [int(i) for i in small_cfg["ids"]]
+        small_types = list(small_cfg["servo_types"])
+        small_signs = list(small_cfg["joint_signs"])
+        self.dynamixel_port = "/dev/serial/by-id/" + small_cfg["dynamixel_port"]
 
-                f"Please ensure the latency timer of {ttyUSBx_2} is 1. Run: \n \
-                echo 1 | sudo tee /sys/bus/usb-serial/devices/{ttyUSBx_2}/latency_timer"
-            )
+        self.big_servo_ids = [int(i) for i in big_cfg.get("ids", [])]
+        big_types = list(big_cfg.get("servo_types", []))
+        big_signs = list(big_cfg.get("joint_signs", []))
+        self.dynamixel_port_big = (
+            "/dev/serial/by-id/" + big_cfg["dynamixel_port"] if self.big_servo_ids else None
+        )
 
-        # Physical Dynamixel IDs can be either 1-8 or 9-16. Select via the
-        # optional "id_start" config field (defaults to 1 for the 1-8 range).
-        id_start = self.config["dynamixel"].get("id_start", 1)
-        if id_start not in (1, 9):
-            raise Exception(f"dynamixel id_start must be 1 or 9, got {id_start}")
-        joint_ids = np.arange(self.num_motors) + id_start
+        for label, ids, types, signs in (
+            ("dynamixel_small", self.small_servo_ids, small_types, small_signs),
+            ("dynamixel_big", self.big_servo_ids, big_types, big_signs),
+        ):
+            assert len(ids) == len(types) == len(signs), \
+                f"{label}: ids, servo_types and joint_signs must have equal length"
+
+        # --- merge both boards into one full-arm ordering (ascending Dynamixel id) ---
+        all_ids = sorted(self.small_servo_ids + self.big_servo_ids)
+        assert len(all_ids) == len(set(all_ids)), "duplicate Dynamixel id across boards"
+        id_to_index = {sid: idx for idx, sid in enumerate(all_ids)}
+
+        self.num_motors = len(all_ids)
+        self.servo_types = [None] * self.num_motors
+        self.joint_signs = np.zeros(self.num_motors)
+        for sid, stype, ssign in zip(
+            self.small_servo_ids + self.big_servo_ids,
+            small_types + big_types,
+            small_signs + big_signs,
+        ):
+            self.servo_types[id_to_index[sid]] = stype
+            self.joint_signs[id_to_index[sid]] = ssign
+
+        # merged-array positions of each board's servos, kept in that board's id
+        # order so they line up with what the driver reads/writes for those ids.
+        self.small_servo_indices = np.array(
+            [id_to_index[sid] for sid in self.small_servo_ids], dtype=int
+        )
+        self.big_servo_indices = np.array(
+            [id_to_index[sid] for sid in self.big_servo_ids], dtype=int
+        )
+        self._big_index_set = set(int(i) for i in self.big_servo_indices)
+
+        # The latency timer on each ttyUSB must be 1, otherwise the control loop
+        # cannot run above 200 Hz, causing very undesirable leader-arm behaviour.
+        self._assert_latency_timer(self.dynamixel_port)
+        if self.big_servo_ids and self.dynamixel_port_big != self.dynamixel_port:
+            self._assert_latency_timer(self.dynamixel_port_big)
 
         try:
-
             self.driver_small = DynamixelDriver(
-                [1, 3, 5, 6, 7, 8], ['XC330_T288_T', 'XC330_T288_T', 'XC330_T288_T', 'XC330_T288_T', 'XC330_T288_T', 'XC330_T288_T'], self.dynamixel_port
+                self.small_servo_ids, small_types, self.dynamixel_port
             )
-            self.driver_big = DynamixelDriver(
-                [2,4], ['XM430_W210_T', 'XM430_W210_T'], self.dynamixel_port_big
-            )
-
+            if self.big_servo_ids:
+                self.driver_big = DynamixelDriver(
+                    self.big_servo_ids, big_types, self.dynamixel_port_big
+                )
         except FileNotFoundError:
             self.get_logger().info(f"Port {self.dynamixel_port} not found. Please check the connection.")
             return
-        self.driver_small.set_torque_mode(False)
-        # set operating mode to current mode
-        self.driver_small.set_operating_mode(0)
-        # enable torque
-        self.driver_small.set_torque_mode(True)
-        self.driver_big.set_torque_mode(False)
-        self.driver_big.set_operating_mode(0)
-        self.driver_big.set_torque_mode(True)
+
+        # set every board to current-control mode (0) with torque enabled
+        for driver in self._drivers():
+            driver.set_torque_mode(False)
+            driver.set_operating_mode(0)
+            driver.set_torque_mode(True)
+
+    def _drivers(self):
+        """Iterate over the active Dynamixel drivers (big board only if configured)."""
+        yield self.driver_small
+        if self.big_servo_ids:
+            yield self.driver_big
+
+    def _assert_latency_timer(self, port):
+        """Raise unless the ttyUSB latency timer for ``port`` is 1.
+
+        If it is not 1, set it with:
+            echo 1 | sudo tee /sys/bus/usb-serial/devices/ttyUSB{NUM}/latency_timer
+        """
+        ttyusb = find_ttyusb(port)
+        result = subprocess.run(
+            f"cat /sys/bus/usb-serial/devices/{ttyusb}/latency_timer",
+            shell=True, capture_output=True, text=True, check=True,
+        )
+        if int(result.stdout) != 1:
+            raise Exception(
+                f"Please ensure the latency timer of {ttyusb} is 1. Run:\n"
+                f"echo 1 | sudo tee /sys/bus/usb-serial/devices/{ttyusb}/latency_timer"
+            )
+
+    def _merge_small_big(self, small_vals, big_vals):
+        """Interleave small/big board readings into full arm order (length num_motors)."""
+        full = np.zeros(self.num_motors)
+        full[self.small_servo_indices] = small_vals
+        if self.big_servo_ids:
+            full[self.big_servo_indices] = big_vals
+        return full
+
+    def _read_merged_pos_vel(self):
+        """Read both boards; return (positions, velocities) in full arm order."""
+        pos_small, vel_small = self.driver_small.get_positions_and_velocities()
+        if self.big_servo_ids:
+            pos_big, vel_big = self.driver_big.get_positions_and_velocities()
+        else:
+            pos_big = vel_big = np.empty(0)
+        return self._merge_small_big(pos_small, pos_big), self._merge_small_big(vel_small, vel_big)
 
 
     def _prepare_inverse_dynamics(self):
@@ -251,13 +316,10 @@ class FACTRTeleopDualBase(Node, ABC):
         configuration roughly corresponding to the follower's calibration position 
         described in self.calibration_joint_pos (within ±90 degrees per joint).
         """
-        # warm up
+        # warm up both boards
         for _ in range(10):
-            self.driver_small.get_positions_and_velocities()
+            self._read_merged_pos_vel()
 
-        for _ in range(10):
-            self.driver_big.get_positions_and_velocities()
-        
         def _get_error(calibration_joint_pos, offset, index, joint_state):
             joint_sign_i = self.joint_signs[index]
             joint_i = joint_sign_i * (joint_state[index] - offset)
@@ -267,18 +329,13 @@ class FACTRTeleopDualBase(Node, ABC):
         # get arm offsets
         self.joint_offsets = []
 
-        curr_joints_pos, _ = self.driver_small.get_positions_and_velocities()
-        curr_joints_pos_big, _ = self.driver_big.get_positions_and_velocities()
-
-        curr_joints = np.insert(curr_joints_pos, 1, curr_joints_pos_big[0])
-        curr_joints = np.insert(curr_joints, 3, curr_joints_pos_big[1])
+        curr_joints, _ = self._read_merged_pos_vel()
 
 
         for i in range(self.num_arm_joints):
             print("Inside method _get_dynamixel_offsets", self.joint_offsets)
-            # new changes
-            if (i == 1 or i == 3):
-                # big servos - not implemented yet
+            if i in self._big_index_set:
+                # servo on the big board -- calibration not implemented yet; placeholder
                 self.joint_offsets.append(0) # space holder
                 continue
 
@@ -332,7 +389,8 @@ class FACTRTeleopDualBase(Node, ABC):
         Disables all torque on the leader arm and gripper during node shutdown.
         """
         self.set_leader_joint_torque(np.zeros(self.num_arm_joints), 0.0)
-        self.driver.set_torque_mode(Falsejoint_sign)
+        for driver in self._drivers():
+            driver.set_torque_mode(False)
 
     def get_leader_joint_states(self):
         """
@@ -340,13 +398,8 @@ class FACTRTeleopDualBase(Node, ABC):
         aligned with the joint conventions (range and direction) of the follower arm.
         """
         self.gripper_pos_prev = self.gripper_pos
-        joint_pos, joint_vel = self.driver_small.get_positions_and_velocities()
-        joint_pos_big, joint_vel_big = self.driver_big.get_positions_and_velocities()
 
-        joint_pos = np.insert(joint_pos, 1, joint_pos_big[0])
-        joint_pos = np.insert(joint_pos, 3, joint_pos_big[1])
-        joint_vel = np.insert(joint_vel, 1, joint_vel_big[0])
-        joint_vel = np.insert(joint_vel, 3, joint_vel_big[1])
+        joint_pos, joint_vel = self._read_merged_pos_vel()
 
         joint_pos_arm = (
             joint_pos[0:self.num_arm_joints] - self.joint_offsets[0:self.num_arm_joints]
@@ -388,24 +441,25 @@ class FACTRTeleopDualBase(Node, ABC):
             self.set_leader_joint_torque(torque, gripper_torque)
             curr_pos, curr_vel, curr_gripper_pos, curr_gripper_vel = self.get_leader_joint_states()
     
+
     def set_leader_joint_torque(self, arm_torque, gripper_torque):
         """
-        Applies torque to the leader arm and gripper.    #             )
-    #         elif h["torque_enable"] == 0 and self.driver.torque_enabled:
-    #             self.get_logger().error(
-    #                 f"[health] servo id{h['id']} disabled its own torque while the node sti
+        Applies torque to the leader arm and gripper.
+
+        The full command (arm joints followed by the gripper, in merged arm order) is
+        split across the small and big boards and converted back to each servo's
+        physical direction using the configured joint_signs.
         """
         arm_gripper_torque = np.append(arm_torque, gripper_torque)
-        small_signs = [1, 1, 1, 1, 1, 1]
-        big_signs = [1, 1]
-        
-        # TODO!
-        small_torque = np.delete(arm_gripper_torque, [1, 3]) # remove the first and third servos for now
-        self.driver_small.set_torque(small_torque * small_signs) # equilvalent to joint_signs
 
-        # TODO - for the 2 big servos
-        big_torque = np.delete(arm_gripper_torque,[0, 2, 4, 5, 6, 7])
-        self.driver_big.set_torque(big_torque * big_signs)
+        small_torque = arm_gripper_torque[self.small_servo_indices]
+        small_signs = self.joint_signs[self.small_servo_indices]
+        self.driver_small.set_torque(small_torque * small_signs)
+
+        if self.big_servo_ids:
+            big_torque = arm_gripper_torque[self.big_servo_indices]
+            big_signs = self.joint_signs[self.big_servo_indices]
+            self.driver_big.set_torque(big_torque * big_signs)
 
     def joint_limit_barrier(self, arm_joint_pos, arm_joint_vel, gripper_joint_pos, gripper_joint_vel):
         """

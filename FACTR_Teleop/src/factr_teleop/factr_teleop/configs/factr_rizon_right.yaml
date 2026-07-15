@@ -1,19 +1,28 @@
 name: right
 
-dynamixel:
+dynamixel_small:
   # USB port name given by the command: ls /dev/serial/by-id/
   dynamixel_port: "usb-FTDI_USB__-__Serial_Converter_FTAA0B2I-if00-port0" # edited on Jun 17
-  # Servo types
-  servo_types: [
-    "XC330_T288_T", "XM430_W210_T", "XC330_T288_T", "XM430_W210_T", 
-    "XC330_T288_T", "XC330_T288_T", "XC330_T288_T", "XC330_T288_T",
-  ]
-  # Servo joint directions to match that of the leader arm
-  joint_signs: [-1, 1, 1, 1, 1, 1, 1, 1]
-  
+  # Dynamixel IDs wired to the small board (order that readings/commands are indexed)
+  ids: [1, 3, 5, 6, 7, 8]
+  # Servo types, one per id (same order as ids)
+  servo_types: ["XC330_T288_T", "XC330_T288_T", "XC330_T288_T", "XC330_T288_T", "XC330_T288_T", "XC330_T288_T"]
+  # Joint directions to match the leader arm, one per id (same order as ids)
+  joint_signs: [-1, 1, 1, 1, 1, 1]
+
+dynamixel_big:
+  # USB port name given by the command: ls /dev/serial/by-id/
+  dynamixel_port: "usb-FTDI_USB__-__Serial_Converter_FTA2U2FX-if00-port0"
+  # Dynamixel IDs wired to the big board (order that readings/commands are indexed)
+  ids: [2, 4]
+  # Servo types, one per id (same order as ids)
+  servo_types: ["XM430_W210_T", "XM430_W210_T"]
+  # Joint directions to match the leader arm, one per id (same order as ids)
+  joint_signs: [1, 1]
+
 arm_teleop:
   # URDF used for creating leader arm dynamics model to compute gravity compensation
-  leader_urdf: "flexiv_teleop_neg45_x.urdf" 
+  leader_urdf: "flexiv_teleop_pos45_x.urdf" 
   num_arm_joints: 7
   arm_joint_limits_max: [-2.5, 4.3, -3, 2.8, -1, 1, -5]
   arm_joint_limits_min: [3, 8.5, 0, 6, 8, 5.2, 5]

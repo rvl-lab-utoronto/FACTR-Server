@@ -50,14 +50,11 @@ class FactrRizonTeleopDualBoard(FACTRTeleopDualBase):
 
     def get_leader_joint_pos(self):
         """
-        Returns ONLY the current joint positions
+        Returns ONLY the current joint positions, merged over both boards in full
+        arm order (config-driven via the base class).
         """
         self.gripper_pos_prev = self.gripper_pos
-        joint_pos, joint_vel = self.driver_small.get_positions_and_velocities()  # [id1,id3,id5,id6,id7,id8]
-        joint_pos_big, _ = self.driver_big.get_positions_and_velocities()        # [id2, id4]
-        # interleave: big servos (ids 2 and 4) go at merged indices 1 and 3
-        joint_pos = np.insert(joint_pos, 1, joint_pos_big[0])  # -> [id1,id2,id3,id5,id6,id7,id8]
-        joint_pos = np.insert(joint_pos, 3, joint_pos_big[1])  # -> [id1,id2,id3,id4,id5,id6,id7,id8]
+        joint_pos, _ = self._read_merged_pos_vel()
         return joint_pos
 
 
