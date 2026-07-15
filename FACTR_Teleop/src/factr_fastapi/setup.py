@@ -24,7 +24,8 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'factr_api = factr_fastapi.factr_api:main'
+            'factr_api = factr_fastapi.factr_api:main',
+            'factr_websocket = factr_fastapi.factr_websocket:main'
         ],
     },
 )

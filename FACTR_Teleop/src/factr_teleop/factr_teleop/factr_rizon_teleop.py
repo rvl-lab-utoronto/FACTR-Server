@@ -88,19 +88,15 @@ class FactrRizonTeleop(FACTRTeleop):
         msg.velocity = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] 
 
         if len(positions) < 8:
-            self.get_logger().info("motors not ready")
-        else:   
-            # for testing
-            print("\033[H\033[2J", end="")
+            self.get_logger().info("motors not ready", throttle_duration_sec=0.5)
+        else:
+            arm_name = "left" if self.index == 0 else "right"
 
-            if self.index == 0:
-                arm_name = "left"
-            else:
-                arm_name = "right"
-
-            for i in range(7):
-                print(f"A{i+1} {arm_name}: {rad_to_deg_signed(positions[i])}")
-            print(f"G1 {arm_name}: {rad_to_deg_signed(positions[7])}")
+            readout = " | ".join(
+                f"A{i+1}:{rad_to_deg_signed(positions[i]):.1f}" for i in range(7)
+            )
+            readout += f" | G1:{rad_to_deg_signed(positions[7]):.1f}"
+            self.get_logger().info(f"{arm_name}: {readout}", throttle_duration_sec=0.5)
 
         self.joint_pos_publisher.publish(msg)
 

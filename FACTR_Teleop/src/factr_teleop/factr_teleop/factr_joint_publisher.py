@@ -1,0 +1,175 @@
+# Read-only FACTR leader joint publisher.
+#
+# Reads the leader arm's DYNAMIXEL servos and publishes CALIBRATED joint positions on
+# /joint_pos_{side} — WITHOUT enabling torque, so the arm stays fully backdrivable
+# (move it by hand during data collection). It reuses FACTR's calibration (joint_signs
+# + a per-joint offset that aligns the startup pose to the config's
+# calibration_joint_pos) so the published values match what full teleop would publish;
+# the factr_api server then relays them over HTTP.
+#
+# Launch once per leader arm (arm_index selects side + config, like factr_api):
+#   ros2 run factr_teleop factr_joint_pub --ros-args -p arm_index:=0   # left
+#   ros2 run factr_teleop factr_joint_pub --ros-args -p arm_index:=1   # right
+#
+# The ONLY bus write this node ever issues is set_torque_mode(False) at startup; every
+# timer tick is a pure read (GroupSyncRead). It never calls set_torque_mode(True), so
+# no motor is ever energized. Calibration (_get_dynamixel_offsets) and the read+publish
+# math (get_leader_joint_states) are copied verbatim from FACTRTeleop so the numbers are
+# identical to full teleop.
+
+import os
+import subprocess
+
+import numpy as np
+import yaml
+
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import JointState
+
+from python_utils.utils import get_workspace_root
+from factr_teleop.dynamixel.driver import DynamixelDriver
+from factr_teleop.factr_teleop import find_ttyusb
+
+
+class FactrJointPublisher(Node):
+    """Reads one leader arm's servos (no torque) and publishes calibrated /joint_pos_{side}."""
+
+    def __init__(self):
+        super().__init__("factr_joint_publisher")
+        arm_index = self.declare_parameter("arm_index", 0).get_parameter_value().integer_value
+        self.side = "left" if arm_index == 0 else "right"
+
+        cfg_name = f"factr_rizon_{self.side}.yaml"
+        cfg_path = os.path.join(
+            get_workspace_root(), f"src/factr_teleop/factr_teleop/configs/{cfg_name}"
+        )
+        with open(cfg_path, "r") as f:
+            self.config = yaml.safe_load(f)
+
+        self.dt = 1.0 / self.config["controller"]["frequency"]
+        self.num_arm_joints = self.config["arm_teleop"]["num_arm_joints"]
+        self.calibration_joint_pos = np.array(
+            self.config["arm_teleop"]["initialization"]["calibration_joint_pos"]
+        )
+        self.gripper_pos = 0.0
+        self.gripper_pos_prev = 0.0
+
+        # ---- driver init: torque stays OFF, arm backdrivable ----
+        self.servo_types = self.config["dynamixel"]["servo_types"]
+        self.num_motors = len(self.servo_types)
+        self.joint_signs = np.array(self.config["dynamixel"]["joint_signs"], dtype=float)
+        self.dynamixel_port = "/dev/serial/by-id/" + self.config["dynamixel"]["dynamixel_port"]
+
+        # FTDI latency timer must be 1 ms to sustain the read rate (default 16 ms ~ 60 Hz).
+        ttyusbx = find_ttyusb(self.dynamixel_port)
+        result = subprocess.run(
+            f"cat /sys/bus/usb-serial/devices/{ttyusbx}/latency_timer",
+            shell=True, capture_output=True, text=True, check=True,
+        )
+        if int(result.stdout) != 1:
+            raise RuntimeError(
+                f"Set the latency timer of {ttyusbx} to 1:\n"
+                f"  echo 1 | sudo tee /sys/bus/usb-serial/devices/{ttyusbx}/latency_timer"
+            )
+
+        first_id = int(self.config["dynamixel"].get("first_id", 1))
+        joint_ids = np.arange(self.num_motors) + first_id
+        self.driver = DynamixelDriver(joint_ids, self.servo_types, self.dynamixel_port)
+        # Torque stays off (read-only). The driver ctor already attempted this; retry
+        # but TOLERATE failure (a servo may report an error flag or already be off) so
+        # we still proceed to READ positions rather than aborting the node.
+        try:
+            self.driver.set_torque_mode(False)
+        except Exception as e:
+            self.get_logger().warning(f"set_torque_mode(False) failed ({e}); reading anyway")
+
+        self._get_dynamixel_offsets()
+
+        self.pub = self.create_publisher(JointState, f"/joint_pos_{self.side}", 10)
+        self.timer = self.create_timer(self.dt, self.publish_cb)
+        self.get_logger().info(
+            f"FACTR joint publisher [{self.side}]: reading {self.num_motors} servos "
+            f"(torque OFF, backdrivable) -> /joint_pos_{self.side} @ {1.0 / self.dt:.0f} Hz"
+        )
+
+    # -- calibration (verbatim from FACTRTeleop, so values match full teleop) --
+
+    def _get_dynamixel_offsets(self, verbose=True):
+        # warm up
+        for _ in range(10):
+            self.driver.get_positions_and_velocities()
+
+        def _get_error(calibration_joint_pos, offset, index, joint_state):
+            joint_sign_i = self.joint_signs[index]
+            joint_i = joint_sign_i * (joint_state[index] - offset)
+            start_i = calibration_joint_pos[index]
+            return np.abs(joint_i - start_i)
+
+        self.joint_offsets = []
+        curr_joints, _ = self.driver.get_positions_and_velocities()
+        for i in range(self.num_arm_joints):
+            best_offset = 0
+            best_error = 1e9
+            for offset in np.linspace(-20 * np.pi, 20 * np.pi, 20 * 4 + 1):
+                error = _get_error(self.calibration_joint_pos, offset, i, curr_joints)
+                if error < best_error:
+                    best_error = error
+                    best_offset = offset
+            self.joint_offsets.append(best_offset)
+        # gripper offset = raw current gripper reading (zeros the gripper at staurtup)
+        self.joint_offsets.append(curr_joints[-1])
+        self.joint_offsets = np.asarray(self.joint_offsets)
+        if verbose:
+            self.get_logger().info(
+                "joint offsets: [" + ", ".join(f"{x:.3f}" for x in self.joint_offsets) + "]"
+            )
+
+    def get_leader_joint_states(self):
+        self.gripper_pos_prev = self.gripper_pos
+        joint_pos, joint_vel = self.driver.get_positions_and_velocities()
+        joint_pos_arm = (
+            joint_pos[0:self.num_arm_joints] - self.joint_offsets[0:self.num_arm_joints]
+        ) * self.joint_signs[0:self.num_arm_joints]
+        self.gripper_pos = (joint_pos[-1] - self.joint_offsets[-1]) * self.joint_signs[-1]
+        joint_vel_arm = joint_vel[0:self.num_arm_joints] * self.joint_signs[0:self.num_arm_joints]
+        gripper_vel = (self.gripper_pos - self.gripper_pos_prev) / self.dt
+        return joint_pos_arm, joint_vel_arm, self.gripper_pos, gripper_vel
+
+    def publish_cb(self):
+        try:
+            arm_pos, arm_vel, grip_pos, grip_vel = self.get_leader_joint_states()
+        except RuntimeError:
+            # Transient Dynamixel bus timeout (e.g. -3001) at 500 Hz: skip this tick and
+            # keep the node alive rather than aborting; the next read usually succeeds.
+            self._read_fails = getattr(self, "_read_fails", 0) + 1
+            if self._read_fails % 200 == 1:
+                self.get_logger().warning(f"transient servo read failure (count={self._read_fails}); skipping tick")
+            return
+        msg = JointState()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.name = [f"joint_{i}" for i in range(self.num_arm_joints)] + ["gripper"]
+        msg.position = arm_pos.tolist() + [float(grip_pos)]  # DoF+1 calibrated values
+        msg.velocity = arm_vel.tolist() + [float(grip_vel)]
+        self.pub.publish(msg)
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = FactrJointPublisher()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # Read-only handle: nothing to de-energize, but be explicit and tidy.
+        try:
+            node.driver.set_torque_mode(False)
+        except Exception:
+            pass
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

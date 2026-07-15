@@ -1,28 +1,31 @@
-name: right
+name: left
 
 dynamixel:
   # USB port name given by the command: ls /dev/serial/by-id/
   dynamixel_port: "usb-FTDI_USB__-__Serial_Converter_FTAA0B2I-if00-port0" # edited on Jun 17
+  first_id: 1   # left arm servos are IDs 1..8 on this bus (8 motors: 7 joints + gripper)
   # Servo types
   servo_types: [
     "XC330_T288_T", "XM430_W210_T", "XC330_T288_T", "XM430_W210_T", 
     "XC330_T288_T", "XC330_T288_T", "XC330_T288_T", "XC330_T288_T",
   ]
   # Servo joint directions to match that of the leader arm
-  joint_signs: [-1, 1, 1, 1, 1, 1, 1, 1]
+  joint_signs: [1, 1, -1, 1, 1, 1, 1, 1]
   
 arm_teleop:
   # URDF used for creating leader arm dynamics model to compute gravity compensation
-  leader_urdf: "flexiv_teleop_neg45_x.urdf" 
+  leader_urdf: "flexivv3_jointconfig.urdf" # TODO
   num_arm_joints: 7
-  arm_joint_limits_max: [-2.5, 4.3, -3, 2.8, -1, 1, -5]
-  arm_joint_limits_min: [3, 8.5, 0, 6, 8, 5.2, 5]
+  arm_joint_limits_max: [4.5, 4.131, 6, 6, 8, 7.77, 3.32]
+  arm_joint_limits_min: [-0.5, -4.5, -3, -6, -4, -4, -3.32] # THIS DOES NOT INCLUDE THE TRIGGER!  
   arm_joint_limits_safety_margin: 0.1
   initialization:
-    # The expected leader arm joint position before launching the script
-    calibration_joint_pos: [0.0, 0.0, 0.0, 1.57, 0.0, 0.0, 0.0]
+    # The expected leader arm jo0int position before launching the script
+    calibration_joint_pos: [0., -0, 0.0, 0, 0, 0, 0] 
+    # The arm needs to be held in a certain position before launching!
+    # More information in the README.md file!
     # The leader arm must be brought to this joint position before the follower starts mirroring the leader
-    initial_match_joint_pos: [0.0, 0.0, 0.0, 1.57, 0.0, 0.0, 0.0]
+    initial_match_joint_pos: [0.0, -0, 0.0, 0, 0, 0, 0]
   
 gripper_teleop:
   # The maximum range (in rad) of the leader gripper trigger
@@ -37,7 +40,7 @@ controller:
     motor_scalar: 94.5652173913
   gravity_comp:
     enable: True
-    gain: 0.65
+    gain: 700
   null_space_regulation:
     null_space_joint_target: [0.0, -0.7854, 0.0, -2.356, 0.0, 1.57, 0.0, 0.0]
     kp: 0.1

@@ -51,6 +51,28 @@ ADDR_OPERATING_MODE = 11
 CURRENT_CONTROL_MODE = 0
 POSITION_CONTROL_MODE = 3
 
+# Health/diagnostics registers (X-series control table; same for XC330 and XM430).
+ADDR_CURRENT_LIMIT = 38            # 2 bytes, EEPROM (constant)
+ADDR_HARDWARE_ERROR_STATUS = 70    # 1 byte; latched fault bits, cleared only by reboot/power-cycle
+ADDR_PRESENT_CURRENT = 126         # 2 bytes, signed
+ADDR_PRESENT_TEMPERATURE = 146     # 1 byte, deg C
+
+#: Hardware Error Status (addr 70) bit -> label, per the X-series control table.
+HW_ERROR_BITS = (
+    (0x01, "INPUT_VOLTAGE"),
+    (0x04, "OVERHEATING"),
+    (0x08, "MOTOR_ENCODER"),
+    (0x10, "ELECTRICAL_SHOCK"),
+    (0x20, "OVERLOAD"),
+)
+
+
+def hw_error_flags(bits):
+    """Decode a Dynamixel Hardware Error Status byte (addr 70) into a list of labels."""
+    if not bits:
+        return []
+    return [name for bit, name in HW_ERROR_BITS if bits & bit]
+
 TORQUE_TO_CURRENT_MAPPING = {
     "XC330_T288_T": 1158.73,
     "XM430_W210_T": 1000/2.69,
@@ -89,7 +111,7 @@ class DynamixelDriverProtocol(Protocol):
             np.ndarray: An array of joint angles.
         """
         ...
-
+        dxl_comm_result = self._groupSyncRead.txRxPacket()
     def close(self):
         """Close the driver."""
 
@@ -99,6 +121,7 @@ class DynamixelDriver(DynamixelDriverProtocol):
         self._ids = ids
         self._positions = None
         self._lock = Lock()
+        self._current_limit_cache = None   # lazily filled by read_health() (EEPROM, constant)
 
         self._portHandler = PortHandler(port)
         self._packetHandler = PacketHandler(2.0)
@@ -229,7 +252,86 @@ class DynamixelDriver(DynamixelDriverProtocol):
     def set_torque(self, torques: Sequence[float]):
         currents = self.torque_to_current_map*torques
         self.set_current(currents)
-     
+
+    def set_position(self, positions: Sequence[float]):
+        """Command goal positions in radians.
+
+        Requires the servos to be in POSITION_CONTROL_MODE with torque enabled.
+        The operating mode lives in EEPROM, so switch modes with torque disabled::
+
+            driver.set_torque_mode(False)
+            driver.set_operating_mode(POSITION_CONTROL_MODE)
+            driver.verify_operating_mode(POSITION_CONTROL_MODE)
+            driver.set_torque_mode(True)
+            driver.set_position([...])
+        """
+        if len(positions) != len(self._ids):
+            raise ValueError("The length of positions must match the number of servos")
+        if not self._torque_enabled:
+            raise RuntimeError("Torque must be enabled to set positions")
+
+        # Separate GroupSyncWrite: self._groupSyncWrite is bound to the 2-byte
+        # goal-current register, whereas goal position is a 4-byte register.
+        group = GroupSyncWrite(
+            self._portHandler, self._packetHandler, ADDR_GOAL_POSITION, LEN_GOAL_POSITION
+        )
+        for dxl_id, position in zip(self._ids, positions):
+            # inverse of the conversion in get_positions_and_velocities()
+            raw = int(position / np.pi * 2048.0)
+            param_goal_position = [
+                DXL_LOBYTE(DXL_LOWORD(raw)),
+                DXL_HIBYTE(DXL_LOWORD(raw)),
+                DXL_LOBYTE(DXL_HIWORD(raw)),
+                DXL_HIBYTE(DXL_HIWORD(raw)),
+            ]
+            if not group.addParam(dxl_id, param_goal_position):
+                raise RuntimeError(f"Failed to set position for Dynamixel with ID {dxl_id}")
+        dxl_comm_result = group.txPacket()
+        if dxl_comm_result != COMM_SUCCESS:
+            raise RuntimeError("Failed to syncwrite goal position")
+        group.clearParam()
+
+    def read_health(self):
+        """Best-effort per-servo health telemetry for diagnosing torque dropouts.
+
+        Returns one dict per servo id with keys: ``id``, ``torque_enable`` (0/1),
+        ``hw_error`` (raw Hardware Error Status byte), ``hw_error_flags`` (list of
+        labels), ``temperature`` (deg C), ``present_current`` (signed register units),
+        ``current_limit`` (register units). Any field that fails to read is ``None``.
+
+        These are individual TxRx round-trips (NOT a GroupSyncRead), so this is slow
+        relative to the control read -- call it at low rate (~1 Hz), never every tick.
+        The Current Limit is EEPROM/constant, so it is read once and cached.
+        """
+        if self._current_limit_cache is None:
+            self._current_limit_cache = []
+            for dxl_id in self._ids:
+                lim, res, _ = self._packetHandler.read2ByteTxRx(
+                    self._portHandler, dxl_id, ADDR_CURRENT_LIMIT
+                )
+                self._current_limit_cache.append(int(lim) if res == COMM_SUCCESS else None)
+
+        health = []
+        for i, dxl_id in enumerate(self._ids):
+            te, r_te, _ = self._packetHandler.read1ByteTxRx(self._portHandler, dxl_id, ADDR_TORQUE_ENABLE)
+            he, r_he, _ = self._packetHandler.read1ByteTxRx(self._portHandler, dxl_id, ADDR_HARDWARE_ERROR_STATUS)
+            tmp, r_tmp, _ = self._packetHandler.read1ByteTxRx(self._portHandler, dxl_id, ADDR_PRESENT_TEMPERATURE)
+            cur, r_cur, _ = self._packetHandler.read2ByteTxRx(self._portHandler, dxl_id, ADDR_PRESENT_CURRENT)
+            if r_cur == COMM_SUCCESS:
+                present_current = cur - 0x10000 if cur > 0x7FFF else cur   # 2-byte signed
+            else:
+                present_current = None
+            health.append({
+                "id": int(dxl_id),
+                "torque_enable": int(te) if r_te == COMM_SUCCESS else None,
+                "hw_error": int(he) if r_he == COMM_SUCCESS else None,
+                "hw_error_flags": hw_error_flags(he) if r_he == COMM_SUCCESS else None,
+                "temperature": int(tmp) if r_tmp == COMM_SUCCESS else None,
+                "present_current": present_current,
+                "current_limit": self._current_limit_cache[i],
+            })
+        return health
+
 
 def main():
     # script for testing purposes

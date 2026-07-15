@@ -1,20 +1,8 @@
-# ---------------------------------------------------------------------------
-# FACTR: Force-Attending Curriculum Training for Contact-Rich Policy Learning
-# https://arxiv.org/abs/2502.17432
-# Copyright (c) 2025 Jason Jingzhou Liu and Yulong Li
+"""
+Read before making any changes to this file!
 
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ---------------------------------------------------------------------------
+The class FACTRTeleopDualBase is intended for controlling the Dynamixel servos with two seperate boards. It is to be used together with the factr_rizon_dual_board.py file. 
+"""
 
 import os
 import time
@@ -51,7 +39,7 @@ def find_ttyusb(port_name):
         raise Exception(f"Unable to resolve the symbolic link for '{port_name}'. {e}")
 
 
-class FACTRTeleop(Node, ABC):
+class FACTRTeleopDualBase(Node, ABC):
     """
     Base class for implementing the FACTR low-cost force-feedback teleoperation system 
     for a follower arm.
@@ -75,6 +63,8 @@ class FACTRTeleop(Node, ABC):
             config_file_name = self.declare_parameter('config_file', 'factr_rizon_left.yaml').get_parameter_value().string_value
         else:
             # right arm
+            print("TRUE")
+            
             config_file_name = self.declare_parameter('config_file', 'factr_rizon_right.yaml').get_parameter_value().string_value
 
         config_path = os.path.join(get_workspace_root(), f"src/factr_teleop/factr_teleop/configs/{config_file_name}")
@@ -82,13 +72,14 @@ class FACTRTeleop(Node, ABC):
             self.config = yaml.safe_load(config_file)
         
         self.name = self.config["name"]
+        print(self.name)
         self.dt = 1 / self.config["controller"]["frequency"]
         
         self._prepare_dynamixel()
         self._prepare_inverse_dynamics()
 
         # Reading from /configs/franka_example.yaml
-        # NEED TO modify the urdf file for the FACTR-Rizon setup!
+        # NEED TO modify the urdf file for the FACTR-Rizon setup!c FACTRT
         # leader arm parameters
         self.num_arm_joints = self.config["arm_teleop"]["num_arm_joints"]
         self.safety_margin = self.config["arm_teleop"]["arm_joint_limits_safety_margin"]
@@ -111,7 +102,7 @@ class FACTRTeleop(Node, ABC):
         self.enable_gravity_comp = self.config["controller"]["gravity_comp"]["enable"]
         self.gravity_comp_modifier = self.config["controller"]["gravity_comp"]["gain"]
         self.tau_g = np.zeros(self.num_arm_joints)
-        # friction comp
+        # friction compdriver_small
         self.stiction_comp_enable_speed = self.config["controller"]["static_friction_comp"]["enable_speed"]
         self.stiction_comp_gain = self.config["controller"]["static_friction_comp"]["gain"]
         self.stiction_dither_flag = np.ones((self.num_arm_joints), dtype=bool)
@@ -130,7 +121,7 @@ class FACTRTeleop(Node, ABC):
         # gripper feedback
         self.enable_gripper_feedback = self.config["controller"]["gripper_feedback"]["enable"]
         
-        # needs to be implemented to establish communication between the leader and the follower
+        # needs to be implemented tarm_joint_limits_max: [4.5, 4.131, 6, 6, 8, 7.77, 3.32]  
         self.set_up_communication()
 
         # calibrate the leader arm joints before starting
@@ -138,9 +129,39 @@ class FACTRTeleop(Node, ABC):
         # ensure the leader and the follower arms have the same joint positions before starting
         self._match_start_pos()
 
+        # --- servo health diagnostics (throttled; for torque-dropout debugging) ---
+        # Reads temperature / present current / hardware-error per servo at low rate and
+        # logs it, with a loud warning if any servo latches a hardware error (e.g. the
+        # base joint OVERLOAD/OVERHEAT that silently kills its gravity comp). See
+        # DynamixelDriver.read_health(). Set period to 0 to disable.c FACTRT
+        self.health_log_period = self.config["controller"].get("health_log_period", 1.0)
+        self._last_health_log = time.time()
+
         # start the control loop
-        # self.dt = 500Hz 
+        # self.dt = 500Hz
+        # self.timer = self.create_timer(self.dt, self.control_loop_callback)
+
+        
+        self._initialize_position()
+
+    def _initialize_position(self):
+        """ Initialize positions"""
+        # # refer to Dynamixel Wizard
+        # self.driver_big.set_torque_mode(False) # turn it off first
+        # self.driver_big.set_operating_mode(3) # mode 3
+        # self.driver_big.set_torque_mode(True)
+        # self.driver_big.set_position([3, 1.5]) # move the two big servos to the initial positions
+
+        # self.driver_small.set_torque_mode(False)
+        # self.driver_small.set_operating_mode(3)
+        # self.driver_small.set_torque_mode(True)
+        # time.sleep(1)
+        # self.driver_small.set_position([0, 6.4, 3, 4.7, 2, 0])
+        
+        # time.sleep(4)
+        # start control loop only after the positions are initialized
         self.timer = self.create_timer(self.dt, self.control_loop_callback)
+        return 
 
 
     def _prepare_dynamixel(self):
@@ -148,11 +169,13 @@ class FACTRTeleop(Node, ABC):
         Instantiates driver for interfacing with Dynamixel servos.
         """
         self.servo_types = self.config["dynamixel"]["servo_types"]
+        print(self.servo_types)
         self.num_motors = len(self.servo_types)
         self.joint_signs = np.array(self.config["dynamixel"]["joint_signs"], dtype=float)
         assert self.num_motors == len(self.joint_signs), \
             "The number of motors and the number of joint signs must be the same"
         self.dynamixel_port = "/dev/serial/by-id/" + self.config["dynamixel"]["dynamixel_port"]
+        self.dynamixel_port_big = "/dev/serial/by-id/" + "usb-FTDI_USB__-__Serial_Converter_FTA2U2FX-if00-port0"
 
         # checks of the latency timer on ttyUSB of the corresponding port is 1
         # if it is not 1, the control loop cannot run at above 200 Hz, which will 
@@ -160,6 +183,7 @@ class FACTRTeleop(Node, ABC):
         # timer is not 1, one can set it to 1 as follows:
         # echo 1 | sudo tee /sys/bus/usb-serial/devices/ttyUSB{NUM}/latency_timer
         ttyUSBx = find_ttyusb(self.dynamixel_port)
+        ttyUSBx_2 = find_ttyusb(self.dynamixel_port_big)
         command = f"cat /sys/bus/usb-serial/devices/{ttyUSBx}/latency_timer"        
         result = subprocess.run(command, shell=True, capture_output=True, text=True, check=True)
         ttyUSB_latency_timer = int(result.stdout)
@@ -167,6 +191,9 @@ class FACTRTeleop(Node, ABC):
             raise Exception(
                 f"Please ensure the latency timer of {ttyUSBx} is 1. Run: \n \
                 echo 1 | sudo tee /sys/bus/usb-serial/devices/{ttyUSBx}/latency_timer"
+
+                f"Please ensure the latency timer of {ttyUSBx_2} is 1. Run: \n \
+                echo 1 | sudo tee /sys/bus/usb-serial/devices/{ttyUSBx_2}/latency_timer"
             )
 
         # Physical Dynamixel IDs can be either 1-8 or 9-16. Select via the
@@ -175,18 +202,28 @@ class FACTRTeleop(Node, ABC):
         if id_start not in (1, 9):
             raise Exception(f"dynamixel id_start must be 1 or 9, got {id_start}")
         joint_ids = np.arange(self.num_motors) + id_start
+
         try:
-            self.driver = DynamixelDriver(
-                joint_ids, self.servo_types, self.dynamixel_port
+
+            self.driver_small = DynamixelDriver(
+                [1, 3, 5, 6, 7, 8], ['XC330_T288_T', 'XC330_T288_T', 'XC330_T288_T', 'XC330_T288_T', 'XC330_T288_T', 'XC330_T288_T'], self.dynamixel_port
             )
+            self.driver_big = DynamixelDriver(
+                [2,4], ['XM430_W210_T', 'XM430_W210_T'], self.dynamixel_port_big
+            )
+
         except FileNotFoundError:
             self.get_logger().info(f"Port {self.dynamixel_port} not found. Please check the connection.")
             return
-        self.driver.set_torque_mode(False)
+        self.driver_small.set_torque_mode(False)
         # set operating mode to current mode
-        self.driver.set_operating_mode(0)
+        self.driver_small.set_operating_mode(0)
         # enable torque
-        self.driver.set_torque_mode(True)
+        self.driver_small.set_torque_mode(True)
+        self.driver_big.set_torque_mode(False)
+        self.driver_big.set_operating_mode(0)
+        self.driver_big.set_torque_mode(True)
+
 
     def _prepare_inverse_dynamics(self):
         """
@@ -199,8 +236,10 @@ class FACTRTeleop(Node, ABC):
         )
         workspace_root = get_workspace_root()
         urdf_model_path = os.path.join(workspace_root, self.leader_urdf)
-        urdf_model_dir = os.path.join(workspace_root, os.path.dirname(urdf_model_path))
-        self.pin_model, _, _ = pin.buildModelsFromUrdf(filename=urdf_model_path, package_dirs=urdf_model_dir)
+        # Build the kinematic/dynamic model only (no geometry). Gravity compensation and
+        # null-space regulation use inertial data only, not the visual/collision meshes,
+        # so this avoids any dependency on mesh files being present on disk.
+        self.pin_model = pin.buildModelFromUrdf(urdf_model_path)
         self.pin_data = self.pin_model.createData()
 
     def _get_dynamixel_offsets(self, verbose=True):
@@ -214,7 +253,10 @@ class FACTRTeleop(Node, ABC):
         """
         # warm up
         for _ in range(10):
-            self.driver.get_positions_and_velocities()
+            self.driver_small.get_positions_and_velocities()
+
+        for _ in range(10):
+            self.driver_big.get_positions_and_velocities()
         
         def _get_error(calibration_joint_pos, offset, index, joint_state):
             joint_sign_i = self.joint_signs[index]
@@ -224,8 +266,22 @@ class FACTRTeleop(Node, ABC):
 
         # get arm offsets
         self.joint_offsets = []
-        curr_joints, _ = self.driver.get_positions_and_velocities()
+
+        curr_joints_pos, _ = self.driver_small.get_positions_and_velocities()
+        curr_joints_pos_big, _ = self.driver_big.get_positions_and_velocities()
+
+        curr_joints = np.insert(curr_joints_pos, 1, curr_joints_pos_big[0])
+        curr_joints = np.insert(curr_joints, 3, curr_joints_pos_big[1])
+
+
         for i in range(self.num_arm_joints):
+            print("Inside method _get_dynamixel_offsets", self.joint_offsets)
+            # new changes
+            if (i == 1 or i == 3):
+                # big servos - not implemented yet
+                self.joint_offsets.append(0) # space holder
+                continue
+
             best_offset = 0
             best_error = 1e9
             # intervals of pi/2
@@ -236,33 +292,36 @@ class FACTRTeleop(Node, ABC):
                     best_offset = offset
             self.joint_offsets.append(best_offset)
 
+        print(self.joint_offsets)
+
         # get gripper offset:
         curr_gripper_joint = curr_joints[-1]
         self.joint_offsets.append(curr_gripper_joint)
 
         self.joint_offsets = np.asarray(self.joint_offsets)
         if verbose:
-            offsets_str = ", ".join(f"{x:.3f}" for x in self.joint_offsets)
-            offsets_pi = ", ".join(
-                f"{int(np.round(x/(np.pi/2)))}*np.pi/2" for x in self.joint_offsets
+            print(self.joint_offsets)
+            print("best offsets               : ", [f"{x:.3f}" for x in self.joint_offsets])
+            print(
+                "best offsets function of pi: ["
+                + ", ".join([f"{int(np.round(x/(np.pi/2)))}*np.pi/2" for x in self.joint_offsets])
+                + " ]",
             )
-            self.get_logger().info(f"FACTR TELEOP {self.name}: best offsets: [{offsets_str}]")
-            self.get_logger().info(f"FACTR TELEOP {self.name}: best offsets (pi): [{offsets_pi}]")
     
     def _match_start_pos(self):
         """
-        Waits until the leader arm is manually moved to roughly the same configuration as the 
+        Waits until the leader arm is manually moved to roughly the same configuration a
+        joint_pos, _ = self.driver_small.get_positions_and_velocities()s the 
         follower arm before the follower arm starts mirroring the leader arm. 
         """
         curr_pos, _, _, _ = self.get_leader_joint_states()
-        while (np.linalg.norm(curr_pos - self.initial_match_joint_pos[0:self.num_arm_joints]) > 5):
+        while (np.linalg.norm(curr_pos - self.initial_match_joint_pos[0:self.num_arm_joints]) > 10):
             current_joint_error = np.linalg.norm(
                 curr_pos - self.initial_match_joint_pos[0:self.num_arm_joints]
             )
-            curr_pos_str = ", ".join(f"{x:.3f}" for x in curr_pos)
+            print("current joint pos: ", [f"{x:.3f}" for x in curr_pos])
             self.get_logger().info(
-                f"FACTR TELEOP {self.name}: Please match starting joint pos. "
-                f"Current error: {current_joint_error:.3f} | current joint pos: [{curr_pos_str}]"
+                f"FACTR TELEOP {self.name}: Please match starting joint pos. Current error: {current_joint_error}"
             )
             curr_pos, _, _, _ = self.get_leader_joint_states()
             time.sleep(0.5)
@@ -273,7 +332,7 @@ class FACTRTeleop(Node, ABC):
         Disables all torque on the leader arm and gripper during node shutdown.
         """
         self.set_leader_joint_torque(np.zeros(self.num_arm_joints), 0.0)
-        self.driver.set_torque_mode(False)
+        self.driver.set_torque_mode(Falsejoint_sign)
 
     def get_leader_joint_states(self):
         """
@@ -281,7 +340,14 @@ class FACTRTeleop(Node, ABC):
         aligned with the joint conventions (range and direction) of the follower arm.
         """
         self.gripper_pos_prev = self.gripper_pos
-        joint_pos, joint_vel = self.driver.get_positions_and_velocities()
+        joint_pos, joint_vel = self.driver_small.get_positions_and_velocities()
+        joint_pos_big, joint_vel_big = self.driver_big.get_positions_and_velocities()
+
+        joint_pos = np.insert(joint_pos, 1, joint_pos_big[0])
+        joint_pos = np.insert(joint_pos, 3, joint_pos_big[1])
+        joint_vel = np.insert(joint_vel, 1, joint_vel_big[0])
+        joint_vel = np.insert(joint_vel, 3, joint_vel_big[1])
+
         joint_pos_arm = (
             joint_pos[0:self.num_arm_joints] - self.joint_offsets[0:self.num_arm_joints]
         ) * self.joint_signs[0:self.num_arm_joints]
@@ -289,6 +355,7 @@ class FACTRTeleop(Node, ABC):
         joint_vel_arm = joint_vel[0:self.num_arm_joints] * self.joint_signs[0:self.num_arm_joints]
         
         gripper_vel = (self.gripper_pos - self.gripper_pos_prev) / self.dt
+        print(joint_pos_arm, joint_vel_arm)
         return joint_pos_arm, joint_vel_arm, self.gripper_pos, gripper_vel
 
         
@@ -323,11 +390,22 @@ class FACTRTeleop(Node, ABC):
     
     def set_leader_joint_torque(self, arm_torque, gripper_torque):
         """
-        Applies torque to the leader arm and gripper.
+        Applies torque to the leader arm and gripper.    #             )
+    #         elif h["torque_enable"] == 0 and self.driver.torque_enabled:
+    #             self.get_logger().error(
+    #                 f"[health] servo id{h['id']} disabled its own torque while the node sti
         """
         arm_gripper_torque = np.append(arm_torque, gripper_torque)
-        self.driver.set_torque(arm_gripper_torque*self.joint_signs)
+        small_signs = [1, 1, 1, 1, 1, 1]
+        big_signs = [1, 1]
+        
+        # TODO!
+        small_torque = np.delete(arm_gripper_torque, [1, 3]) # remove the first and third servos for now
+        self.driver_small.set_torque(small_torque * small_signs) # equilvalent to joint_signs
 
+        # TODO - for the 2 big servos
+        big_torque = np.delete(arm_gripper_torque,[0, 2, 4, 5, 6, 7])
+        self.driver_big.set_torque(big_torque * big_signs)
 
     def joint_limit_barrier(self, arm_joint_pos, arm_joint_vel, gripper_joint_pos, gripper_joint_vel):
         """
@@ -399,7 +477,7 @@ class FACTRTeleop(Node, ABC):
         of the leader arm.
 
         This method enables the specification of a desired null-space joint configuration 
-        via `self.null_space_joint_target`. It implements the control strategy described 
+        via `self.null_space_joint_target`. It implcontinuehe control strategy described 
         in Equation 3 of Section III.B in the paper, projecting a PD control law into 
         the null space of the task Jacobian to achieve secondary objectives without 
         affecting the primary task.
@@ -425,46 +503,69 @@ class FACTRTeleop(Node, ABC):
         return tau_ff
 
     def control_loop_callback(self):
-        """
-        Runs the main control loop of the leader arm. 
+        # visit factr_rizon_dual_board.py
+        a = 1 + 1
 
-        Note that while the control loop can run at up to 500 Hz, lower frequencies 
-        such as 200 Hz can still yield comparable performance, although they may 
-        require additional tuning of control parameters. For Dynamixel servos to 
-        support a 500 Hz control frequency, ensure that the Baud Rate is set to 4 Mbps 
-        and the Return Delay Time is set to 0 using the Dynamixel Wizard software.
-        """
-        leader_arm_pos, leader_arm_vel, leader_gripper_pos, leader_gripper_vel = self.get_leader_joint_states()
 
-        torque_arm = np.zeros(self.num_arm_joints)
-        torque_l, torque_gripper = self.joint_limit_barrier(
-            leader_arm_pos, leader_arm_vel, leader_gripper_pos, leader_gripper_vel
-        )
-        torque_arm += torque_l
-        torque_arm += self.null_space_regulation(leader_arm_pos, leader_arm_vel)
+    # def _log_servo_health(self):
+    #     """Throttled (~``health_log_period`` s) servo health read + log.
 
-        if self.enable_gravity_comp:
-            torque_arm += self.gravity_compensation(leader_arm_pos, leader_arm_vel)
-            torque_arm += self.friction_compensation(leader_arm_vel)
-        
-        # if self.enable_torque_feedback:
-        #     print(self.get_leader_arm_external_joint_torque())
-        #     external_joint_torque = self.get_leader_arm_external_joint_torque()
-        #     torque_arm += self.torque_feedback(external_joint_torque, leader_arm_vel)
-        
-        # if self.enable_gripper_feedback:
-        #     gripper_feedback = self.get_leader_gripper_feedback()
-        #     torque_gripper += self.gripper_feedback(leader_gripper_pos, leader_gripper_vel, gripper_feedback)
+    #     Diagnoses torque dropouts such as the base joint silently losing gravity comp:
+    #     watch ``T`` (temperature) climb over the minute and ``I`` (present current) sit
+    #     pegged near its limit, and get an explicit ERROR the moment a servo latches a
+    #     Hardware Error (OVERLOAD/OVERHEAT/...) or disables its own torque. On such a
+    #     latch FACTR_Teleop/src/factr_teleop/factr_teleop/factr_rizarm_joint_limits_max: [4.5, 4.131, 6, 6, 8, 7.77, 3.32]  
+    #     if not self.health_log_period:
+    #         return
+    #     now = tFACTR_Teleop/src/factr_teleop/factr_teleop/factr_rizon_dual_board.py- self._last_health_log < self.health_log_period:
+    #         return
+    #     self._last_health_log = now
 
-        self.set_leader_joint_torque(torque_arm, torque_gripper)
-        # self.update_communication(leader_arm_pos, leader_gripper_pos)
+    #     try:
+    #         health = self.driver.read_health()
+    #     except Exception as e:
+    #         self.get_logger().warning(f"[health] read failed: {e}")
+    #         return
+
+    #     summary = "  ".join(
+    #         f"id{h['id']}:T={h['temperature']}C I={h['present_current']}/eturn
+
+    #     summary = "  ".join(
+    #         f"id{h['id']}:T={h['temperature']}C I={h['present_current']}/{h['current_limit']}"
+    #         for h in health{h['current_limit']}"
+    #         for h in health
+    #     )
+    #     self.get_logger().info(f"[health] {summary}")
+
+    #     for h in health:
+    #         if h["hw_error"]:
+    #             self.get_logger().error(
+    #                 f"[health] servo id{h['id']} HARDWARE ERROR {h['hw_error_flags']} "
+    #                 f"(0x{h['hw_error']:02x}) T={h['temperature']}C I={h['present_current']} "
+    #                 f"-- torque has latched OFF; reboot/power-cycle the servo to clear"
+    #             )
+    #         elif h["torque_enable"] == 0 and self.driver.torque_enabled:
+    #             self.get_logger().error(
+    #                 f"[health] servo id{h['id']} disabled its own torque while the node still "
+    #                 f"commands torque ON (likely protective shutdown) T={h['temperature']}C "
+    #                 f"I={h['present_current']}"
+    #             )
 
 
     @abstractmethod
     def set_up_communication(self):
         """
         This method should be implemented to set up communication between the leader arm
-        and the follower arm for bilateral teleoperation. This method is called once
+        and the follower arm for bilateral teleoperation. This method iarm_joint_limits_max: [4.5, 4.131, 6, 6, 8, 7.77, 3.32]  
+  arm_joint_limits_min: [-0.5, -4.5, -3, -6, -4, -4, -3.32] # THIS DOES NOT INCLUDE THE TRIGGER!  
+  arm_joint_limits_safety_margin: 0.1
+  initialization:
+    # The expected leader arm jo0int position before launching the script
+    calibration_joint_pos: [0., -0, 0.0, 0, 0, 0, 0] 
+    # The arm needs to be held in a certain position before launching!
+    # More information in the README.md file!
+    # The leader arm must be brought to this joint position before the follower starts mirroring the leader
+    initial_match_joint_pos: [0.0, -0, 0.0, 0, 0, 0, 0]s called once
         in the __init__ method.
         
         For example, a subscriber can  be set up to receive external joint torque from 
