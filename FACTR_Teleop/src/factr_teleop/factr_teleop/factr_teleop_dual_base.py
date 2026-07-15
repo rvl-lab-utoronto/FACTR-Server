@@ -441,7 +441,7 @@ class FACTRTeleopDualBase(Node, ABC):
     def set_leader_joint_torque(self, arm_torque, gripper_torque):
         """
         Applies torque to the leader arm and gripper.
-
+this is not what I want to 
         The full command (arm joints followed by the gripper, in merged arm order) is
         split across the small and big boards and converted back to each servo's
         physical direction using the configured joint_signs.

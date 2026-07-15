@@ -24,8 +24,8 @@ arm_teleop:
   # URDF used for creating leader arm dynamics model to compute gravity compensation
   leader_urdf: "flexiv_teleop_pos45_x.urdf" 
   num_arm_joints: 7
-  arm_joint_limits_max: [-2.5, 4.3, -3, 2.8, -1, 1, -5]
-  arm_joint_limits_min: [3, 8.5, 0, 6, 8, 5.2, 5]
+  arm_joint_limits_max: [2.8798, 2.3562, 3.0543, 2.7751, 3.0543, 4.6251, 3.0543]
+  arm_joint_limits_min: [-2.8798, -2.3562, -3.0543, -1.9548, -3.0543, -1.4835, -3.0543]
   arm_joint_limits_safety_margin: 0.1
   initialization:
     # The expected leader arm joint position before launching the script
