@@ -334,10 +334,6 @@ class FACTRTeleopDualBase(Node, ABC):
 
         for i in range(self.num_arm_joints):
             print("Inside method _get_dynamixel_offsets", self.joint_offsets)
-            if i in self._big_index_set:
-                # servo on the big board -- calibration not implemented yet; placeholder
-                self.joint_offsets.append(0) # space holder
-                continue
 
             best_offset = 0
             best_error = 1e9
