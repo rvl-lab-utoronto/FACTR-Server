@@ -31,6 +31,8 @@ from python_utils.utils import get_workspace_root
 from factr_teleop.dynamixel.driver import DynamixelDriver
 from factr_teleop.factr_teleop import find_ttyusb
 
+"""This is never executed"""
+
 
 class FactrJointPublisher(Node):
     """Reads one leader arm's servos (no torque) and publishes calibrated /joint_pos_{side}."""

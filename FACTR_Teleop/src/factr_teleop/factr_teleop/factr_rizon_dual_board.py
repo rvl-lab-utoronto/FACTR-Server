@@ -63,10 +63,6 @@ class FactrRizonTeleopDualBoard(FACTRTeleopDualBase):
         Additional control loop feature: update the joint positions of one of the leader arms (left or right), runs at 500Hz
         """
 
-        # update joint positions
-        joint_pos = self.get_leader_joint_pos()
-        self.joint_positions = joint_pos
-
         leader_arm_pos, leader_arm_vel, leader_gripper_pos, leader_gripper_vel = self.get_leader_joint_states()
 
         torque_arm = np.zeros(self.num_arm_joints)
@@ -90,6 +86,10 @@ class FactrRizonTeleopDualBoard(FACTRTeleopDualBase):
         #     torque_gripper += self.gripper_feedback(leader_gripper_pos, leader_gripper_vel, gripper_feedback)
 
         self.set_leader_joint_torque(torque_arm, torque_gripper)
+        
+        # update joint positions
+        joint_pos = self.get_leader_joint_pos()
+        self.joint_positions = joint_pos
 
 
     def publish_joint_pos(self):

@@ -216,3 +216,5 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# FACTR teleop runtime health/telemetry log (see .vscode task)
+FACTR_Teleop/logs/

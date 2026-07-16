@@ -21,5 +21,6 @@ As of Jul 13 2026:
         2. start grav comp
         3. start teleoperation (for Flexiv client: if the websocket channels return None, that means the arm is not yet ready)
 
-        
+It's possible that factr_joint_publisher.py was never called.
+
 

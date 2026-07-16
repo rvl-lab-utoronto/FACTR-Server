@@ -8,7 +8,7 @@ dynamixel_small:
   # Servo types, one per id (same order as ids)
   servo_types: ["XC330_T288_T", "XC330_T288_T", "XC330_T288_T", "XC330_T288_T", "XC330_T288_T", "XC330_T288_T"]
   # Joint directions to match the leader arm, one per id (same order as ids)
-  joint_signs: [1, 1, 1, 1, 1, 1]
+  joint_signs: [-1, 1, 1, 1, 1, 1]
 
 dynamixel_big:
   # USB port name given by the command: ls /dev/serial/by-id/
@@ -38,7 +38,7 @@ gripper_teleop:
   actuation_range: 10
 
 controller:
-  frequency: 500
+  frequency: 400
   torque_feedback:
     enable: True
     gain: 3.0
