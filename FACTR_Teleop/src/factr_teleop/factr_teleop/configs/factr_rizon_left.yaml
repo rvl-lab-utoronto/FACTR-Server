@@ -32,6 +32,10 @@ gripper_teleop:
 
 controller:
   frequency: 500
+  # Servo health telemetry (temp + current) sample period in seconds. 0.1 = 10 Hz.
+  # read_health() batches all servos into 2 GroupSyncRead transactions, so 10 Hz is
+  # cheap (a few ms/sample, not the ~30 ms of the old per-servo reads). 0 disables.
+  health_log_period: 0.1
   torque_feedback:
     enable: False
     gain: 3.0
@@ -39,7 +43,12 @@ controller:
     motor_scalar: 94.5652173913
   gravity_comp:
     enable: True
-    gain: 0.65
+    gain: 0.5
+    # Gravity comp stays off until every arm joint is within home_tolerance rad of
+    # initial_match_joint_pos; the gain then ramps from 0 to the value above over
+    # ramp_up_time seconds (0 = enable instantly once home is reached).
+    home_tolerance: 10
+    ramp_up_time: 2.0
   null_space_regulation:
     null_space_joint_target: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] # TODO: edit this to home pose of follower arm
     kp: 0.1

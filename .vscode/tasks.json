@@ -2,9 +2,24 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "FACTR: Launch grav-comp teleop + API (port 5000)",
+      "label": "FACTR: Launch EVERYTHING (both arms + API)",
       "type": "shell",
-      "command": "source /opt/ros/humble/setup.bash && source install/setup.bash; fuser -k 5000/tcp 2>/dev/null; sleep 1; /usr/bin/python3 -m src.factr_fastapi.factr_fastapi.factr_api & API_PID=$!; trap 'kill $API_PID 2>/dev/null' EXIT INT TERM; sleep 2; mkdir -p logs; : > logs/factr_health.log; /usr/bin/python3 -m src.factr_teleop.factr_teleop.factr_rizon_teleop 2> >(tee -a logs/factr_health.log >&2)",
+      "command": "source /opt/ros/humble/setup.bash && source install/setup.bash; echo '=========================================================='; echo '>>> POSE BOTH ARMS in home [0,0,0,1.57,0,0,0] (J4 ~9e_tolerance rad of home, then ramps in.'; echo '=========================================================='; sleep 10; mkdir -p logs; : > logs/factr_health_left.log; : > logs/factr_health_right.log; fuser -k 5000/tcp 2>/dev/null; fuser -k 5001/tcp 2>/dev/null; sleep 1; echo '>>> [1/3] LEFT teleop starting (output below + logs/factr_health_left.log)...'; /usr/bin/python3 -m src.factr_teleop.factr_teleop.factr_rizon_teleop > /dev/null 2> >(tee -a logs/factr_health_left.log >&2) & sleep 2; echo '>>> [2/3] RIGHT teleop starting (output below + logs/factr_health_right.log)...'; /usr/bin/python3 -m src.factr_teleop.factr_teleop.factr_rizon_dual_board > /dev/null 2> >(tee -a logs/factr_health_right.log >&2) & sleep 2; echo '>>> [3/3] API starting (:5000 left, :5001 right)...'; /usr/bin/python3 -m src.factr_fastapi.factr_fastapi.factr_api; wait",
+      "options": {
+        "cwd": "${workspaceFolder}/FACTR_Teleop"0deg) NOW -- calibration starts in 10s.'; echo '>>> NOTE: gravity comp stays OFF until EACH arm is within hom
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "detail": "ONE-CLICK: launches BOTH arms (torque ON, gravity comp) AND the both-arms API. Sleeps 30s FIRST so you can place BOTH arms in the calibration pose [0,0,0,1.57,0,0,0] (J4 ~90deg) before calibration reads them. Then: LEFT teleop (factr_rizon_teleop -> /joint_pos_left) and RIGHT teleop (factr_rizon_dual_board -> /joint_pos_right) run in the background with their stderr -> logs/factr_health_{left,right}.log (watch with the Tail tasks; their stdout is discarded so this panel stays clean), and the API runs in the FOREGROUND serving :5000 (left) + :5001 (right). Ctrl-C in this panel signals the whole group -- rclpy catches SIGINT so the teleops de-energize gracefully; if an arm stays energized, cut power. NOTE: the VSCode stop button (SIGTERM) does NOT de-energize -- use Ctrl-C. Uses /usr/bin/python3 (3.10) since conda 3.13 can't load rclpy."
+    },
+    {
+      "label": "FACTR: Launch grav-comp teleop LEFT (publishes /joint_pos_left)",
+      "type": "shell",
+      "command": "source /opt/ros/humble/setup.bash && source install/setup.bash; echo '>>> POSE THE LEFT ARM in home [0,0,0,1.57,0,0,0] (J4 ~90deg) now -- calibration starts in 30s...'; sleep 10; mkdir -p logs; : > logs/factr_health_left.log; /usr/bin/python3 -m src.factr_teleop.factr_teleop.factr_rizon_teleop 2> >(tee -a logs/factr_health_left.log >&2)",
       "options": {
         "cwd": "${workspaceFolder}/FACTR_Teleop"
       },
@@ -14,7 +29,67 @@
         "panel": "dedicated",
         "clear": true
       },
-      "detail": "WARNING: energizes the servos (torque ON, gravity comp). Put the leader arm in the calibration pose [0,0,0,1.57,0,0,0] (J4 ~90 deg, rest 0, gripper open) BEFORE running this task, otherwise factr_rizon_teleop blocks forever in _match_start_pos waiting for the arm to be posed. Frees port 5000 (fuser), starts the FastAPI server in the background (arm_index=0 -> left, port 5000) and records its PID, then runs factr_rizon_teleop in the FOREGROUND so its calibration/match prompts and live joint table are visible. On stop, a PID-based trap kills the background API (no pkill-by-name, which would self-match this task's own command line and spam 'Terminated'). Note factr_rizon_teleop has no clean-shutdown hook, so torque stays latched on the servos after stop (cut power to fully de-energize). If a previous teleop is still holding the serial bus, this run errors with a Dynamixel 'multiple access' message -- stop that process first. The teleop's stderr (all ROS logs incl. the per-second [health] servo telemetry and HARDWARE ERROR lines) is tee'd to FACTR_Teleop/logs/factr_health.log (created if missing, truncated each run; gitignored) AND still shown in the panel; watch it clean with 'tail -f logs/factr_health.log' since the 500 Hz screen-clear wipes the panel. Uses /usr/bin/python3 (3.10) since conda 3.13 can't load rclpy."
+      "detail": "WARNING: energizes the LEFT arm servos (torque ON, gravity comp). Sleeps 30s FIRST so you can place the arm in the calibration pose [0,0,0,1.57,0,0,0] before calibration reads it; then runs factr_rizon_teleop in the foreground (calibration -> match -> grav-comp loop, publishing /joint_pos_left). Does NOT start the API -- run the 'Launch API' task separately (one server serves both arms). Ctrl-C in this panel de-energizes gracefully (main() now zeros+disables torque and closes the port); the VSCode stop button sends SIGTERM instead and will NOT de-energize. stderr (incl. per-second [health] telemetry) is tee'd to logs/factr_health_left.log (watch with the Tail task). Uses /usr/bin/python3 (3.10) since conda 3.13 can't load rclpy."
+    },
+    {
+      "label": "FACTR: Launch grav-comp teleop RIGHT (dual-board, publishes /joint_pos_right)",
+      "type": "shell",
+      "command": "source /opt/ros/humble/setup.bash && source install/setup.bash; echo '>>> POSE THE RIGHT ARM in home [0,0,0,1.57,0,0,0] (J4 ~90deg) now -- calibration starts in 30s...'; sleep 10; mkdir -p logs; : > logs/factr_health_right.log; /usr/bin/python3 -m src.factr_teleop.factr_teleop.factr_rizon_dual_board 2> >(tee -a logs/factr_health_right.log >&2)",
+      "options": {
+        "cwd": "${workspaceFolder}/FACTR_Teleop"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "detail": "WARNING: energizes BOTH power boards of the RIGHT arm (torque ON, gravity comp). Requires both U2D2 boards connected (dynamixel_small + dynamixel_big in factr_rizon_right.yaml). Sleeps 30s FIRST so you can place the arm in the calibration pose [0,0,0,1.57,0,0,0] before calibration; then runs factr_rizon_dual_board in the foreground (publishing /joint_pos_right). Does NOT start the API -- run the 'Launch API' task separately. Ctrl-C de-energizes gracefully (both boards); the VSCode stop button (SIGTERM) does NOT. stderr (incl. both-board [health] telemetry -- id2/id4 next to the small-board servos) is tee'd to logs/factr_health_right.log. Uses /usr/bin/python3 (3.10) since conda 3.13 can't load rclpy."
+    },
+    {
+      "label": "FACTR: Launch API (both arms -- left :5000, right :5001)",
+      "type": "shell",
+      "command": "source /opt/ros/humble/setup.bash && source install/setup.bash; fuser -k 5000/tcp 2>/dev/null; fuser -k 5001/tcp 2>/dev/null; sleep 1; /usr/bin/python3 -m src.factr_fastapi.factr_fastapi.factr_api",
+      "options": {
+        "cwd": "${workspaceFolder}/FACTR_Teleop"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "detail": "Single FastAPI process serving BOTH arms on two ports: GET :5000/get_joint_positions_left  (<- /joint_pos_left) and GET :5001/get_joint_positions_right (<- /joint_pos_right). Does NOT touch the servos -- no arm posing needed, no torque; it just relays whatever the teleop nodes publish (serves the DoF+1 placeholder until a publisher connects). Frees ports 5000 and 5001 first. Run this alongside whichever teleop task(s) you want. Uses /usr/bin/python3 (3.10) since conda 3.13 can't load rclpy."
+    },
+    {
+      "label": "FACTR: Tail health log LEFT",
+      "type": "shell",
+      "command": "tail -F logs/factr_health_left.log",
+      "options": {
+        "cwd": "${workspaceFolder}/FACTR_Teleop"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "detail": "Follows the LEFT teleop health log (clean [health] telemetry + HARDWARE ERROR + calibration/match lines, without the 500 Hz screen-clear that wipes the launch panel). Run alongside the LEFT teleop task. Uses tail -F so it survives the log being (re)created and truncated each launch."
+    },
+    {
+      "label": "FACTR: Tail health log RIGHT",
+      "type": "shell",
+      "command": "tail -F logs/factr_health_right.log",
+      "options": {
+        "cwd": "${workspaceFolder}/FACTR_Teleop"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "detail": "Follows the RIGHT (dual-board) teleop health log (clean per-second [health] line covering both boards -- id2/id4 big-board XM430s next to the small-board XC330s -- plus HARDWARE ERROR lines). Run alongside the RIGHT teleop task. Uses tail -F so it survives the log being (re)created and truncated each launch."
     }
   ]
 }

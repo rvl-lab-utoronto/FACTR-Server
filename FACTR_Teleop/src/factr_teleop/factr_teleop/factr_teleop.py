@@ -108,8 +108,18 @@ class FACTRTeleop(Node, ABC):
         self.gripper_pos = 0.0
 
         # gravity comp
-        self.enable_gravity_comp = self.config["controller"]["gravity_comp"]["enable"]
-        self.gravity_comp_modifier = self.config["controller"]["gravity_comp"]["gain"]
+        # Gravity comp stays disabled (scale 0) until the arm is manually brought to its
+        # home pose (initial_match_joint_pos); the gain then ramps linearly from 0 to the
+        # configured value over ramp_up_time seconds so torque fades in instead of
+        # stepping onto a limp arm. See _gravity_comp_ramp_scale().
+        gravity_comp_config = self.config["controller"]["gravity_comp"]
+        self.enable_gravity_comp = gravity_comp_config["enable"]
+        self.gravity_comp_modifier = gravity_comp_config["gain"]
+        self.gravity_comp_home_tolerance = gravity_comp_config.get("home_tolerance", 0.15)
+        self.gravity_comp_ramp_up_time = gravity_comp_config.get("ramp_up_time", 2.0)
+        self.gravity_comp_at_home = False
+        self.gravity_comp_scale = 0.0
+        self._gravity_comp_wait_log_time = 0.0
         self.tau_g = np.zeros(self.num_arm_joints)
         # friction comp
         self.stiction_comp_enable_speed = self.config["controller"]["static_friction_comp"]["enable_speed"]
@@ -165,12 +175,16 @@ class FACTRTeleop(Node, ABC):
 
         # checks of the latency timer on ttyUSB of the corresponding port is 1
         # if it is not 1, the control loop cannot run at above 200 Hz, which will 
-        # cause extremely undesirable behaviour for the leader arm. If the latency 
+        # cause extremely undesirable bding to the follower's calibration position 
+        described in self.calibration_joint_pos (within ±90 degrees per joint).
+        """ehaviour for the leader arm. If the latency 
         # timer is not 1, one can set it to 1 as follows:
         # echo 1 | sudo tee /sys/bus/usb-serial/devices/ttyUSB{NUM}/latency_timer
         ttyUSBx = find_ttyusb(self.dynamixel_port)
         command = f"cat /sys/bus/usb-serial/devices/{ttyUSBx}/latency_timer"        
-        result = subprocess.run(command, shell=True, capture_output=True, text=True, check=True)
+        result = subprocess.run(commandding to the follower's calibration position 
+        described in self.calibration_joint_pos (within ±90 degrees per joint).
+        """, shell=True, capture_output=True, text=True, check=True)
         ttyUSB_latency_timer = int(result.stdout)
         if ttyUSB_latency_timer != 1:
             raise Exception(
@@ -365,22 +379,65 @@ class FACTRTeleop(Node, ABC):
             tau_l_gripper = 0.0
         return tau_l, tau_l_gripper
 
+    def _gravity_comp_ramp_scale(self, arm_joint_pos):
+        """
+        Gates gravity compensation on the arm reaching its home pose, then ramps it in.
+
+        Returns the scale in [0, 1] applied to the configured gravity comp gain. The
+        scale is 0 until every arm joint is within ``gravity_comp_home_tolerance`` rad
+        of the home pose (``initial_match_joint_pos``). Once home is reached the gate
+        latches (moving away afterwards does not disable gravity comp) and the scale
+        ramps linearly from 0 to 1 over ``gravity_comp_ramp_up_time`` seconds.
+        """
+        if not self.gravity_comp_at_home:
+            home_error = np.abs(
+                arm_joint_pos - self.initial_match_joint_pos[0:self.num_arm_joints]
+            )
+            if np.max(home_error) > self.gravity_comp_home_tolerance:
+                now = time.time()
+                if now - self._gravity_comp_wait_log_time >= 1.0:
+                    self._gravity_comp_wait_log_time = now
+                    worst = int(np.argmax(home_error))
+                    self.get_logger().info(
+                        f"FACTR TELEOP {self.name}: gravity comp off -- bring the arm to "
+                        f"its home pose (joint {worst + 1} is {home_error[worst]:.2f} rad away)"
+                    )
+                return 0.0
+            self.gravity_comp_at_home = True
+            self.get_logger().info(
+                f"FACTR TELEOP {self.name}: home pose reached, ramping gravity comp "
+                f"to gain {self.gravity_comp_modifier} over {self.gravity_comp_ramp_up_time}s"
+            )
+        if self.gravity_comp_scale < 1.0:
+            if self.gravity_comp_ramp_up_time <= 0.0:
+                self.gravity_comp_scale = 1.0
+            else:
+                self.gravity_comp_scale = min(
+                    1.0, self.gravity_comp_scale + self.dt / self.gravity_comp_ramp_up_time
+                )
+        return self.gravity_comp_scale
+
     def gravity_compensation(self, arm_joint_pos, arm_joint_vel):
         """
         Computes joint torque for gravity compensation using inverse dynamics.
-        This method uses the Recursive Newton-Euler Algorithm (RNEA), provided by the 
-        Pinocchio library, to calculate the torques required to counteract gravity 
-        at the current joint states. The result is scaled by a modifier to tune the 
+        This method uses the Recursive Newton-Euler Algorithm (RNEA), provided by the
+        Pinocchio library, to calculate the torques required to counteract gravity
+        at the current joint states. The result is scaled by a modifier to tune the
         compensation strength.
 
-        This implementation corresponds to the gravity compensation strategy 
+        The output is zero until the arm is brought to its home pose, after which it
+        ramps in over ``gravity_comp_ramp_up_time`` seconds (see
+        _gravity_comp_ramp_scale()). Since ``self.tau_g`` carries the same scale,
+        friction_compensation() fades in with it.
+
+        This implementation corresponds to the gravity compensation strategy
         described in Section III.C of the paper.
         """
         self.tau_g = pin.rnea(
-            self.pin_model, self.pin_data, 
+            self.pin_model, self.pin_data,
             arm_joint_pos, arm_joint_vel, np.zeros_like(arm_joint_vel)
         )
-        self.tau_g *= self.gravity_comp_modifier 
+        self.tau_g *= self.gravity_comp_modifier * self._gravity_comp_ramp_scale(arm_joint_pos)
         return self.tau_g
 
     def friction_compensation(self, arm_joint_vel):
@@ -499,11 +556,16 @@ class FACTRTeleop(Node, ABC):
             self.get_logger().warning(f"[health] read failed: {e}")
             return
 
-        summary = "  ".join(
-            f"id{h['id']}:T={h['temperature']}C I={h['present_current']}/{h['current_limit']}"
-            for h in health
-        )
-        self.get_logger().info(f"[health] {summary}")
+        lines = ["[health] err(70) pwm(124) I(126) vel(128) pos(132) postraj(140) Vin(144) T(146):"]
+        for h in health:
+            vin = f"{h['input_voltage'] / 10:.1f}" if h["input_voltage"] is not None else "?"
+            lines.append(
+                f"  id{h['id']} err={h['hw_error_flags'] or 'OK'} te={h['torque_enable']}"
+                f" pwm={h['present_pwm']} I={h['present_current']}/{h['current_limit']}"
+                f" vel={h['present_velocity']} pos={h['present_position']}"
+                f" postraj={h['position_trajectory']} Vin={vin}V T={h['temperature']}C"
+            )
+        self.get_logger().info("\n".join(lines))
 
         for h in health:
             if h["hw_error"]:

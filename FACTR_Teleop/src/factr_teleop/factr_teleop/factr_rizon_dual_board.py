@@ -86,10 +86,12 @@ class FactrRizonTeleopDualBoard(FACTRTeleopDualBase):
         #     torque_gripper += self.gripper_feedback(leader_gripper_pos, leader_gripper_vel, gripper_feedback)
 
         self.set_leader_joint_torque(torque_arm, torque_gripper)
-        
+
         # update joint positions
         joint_pos = self.get_leader_joint_pos()
         self.joint_positions = joint_pos
+
+        self._log_servo_health()
 
 
     def publish_joint_pos(self):
@@ -159,9 +161,26 @@ def main(args=None):
 
     executor = MultiThreadedExecutor() # mutli thread needed
     executor.add_node(right_factr)
-    executor.spin()
-
-    rclpy.shutdown()
+    try:
+        executor.spin()
+    except KeyboardInterrupt:
+        right_factr.get_logger().info("KeyboardInterrupt: de-energizing servos and closing boards...")
+    finally:
+        # Graceful shutdown: zero + disable torque on BOTH boards, then close the ports.
+        try:
+            right_factr.shut_down()
+        except Exception as e:
+            right_factr.get_logger().error(f"shut_down failed: {e}")
+        for driver in right_factr._drivers():
+            try:
+                driver.close()
+            except Exception:
+                pass
+        right_factr.destroy_node()
+        try:
+            rclpy.shutdown()
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     main()

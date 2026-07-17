@@ -133,9 +133,25 @@ def main(args=None):
     executor = MultiThreadedExecutor() # mutli thread needed
     executor.add_node(left_factr)
     # executor.add_node(right_factr)
-    executor.spin()
-
-    rclpy.shutdown()
+    try:
+        executor.spin()
+    except KeyboardInterrupt:
+        left_factr.get_logger().info("KeyboardInterrupt: de-energizing servos and closing board...")
+    finally:
+        # Graceful shutdown: zero + disable torque, then close the serial port.
+        try:
+            left_factr.shut_down()
+        except Exception as e:
+            left_factr.get_logger().error(f"shut_down failed: {e}")
+        try:
+            left_factr.driver.close()
+        except Exception:
+            pass
+        left_factr.destroy_node()
+        try:
+            rclpy.shutdown()
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     main()

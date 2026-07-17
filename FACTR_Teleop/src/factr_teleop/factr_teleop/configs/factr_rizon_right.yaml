@@ -6,9 +6,9 @@ dynamixel_small:
   # Dynamixel IDs wired to the small board (order that readings/commands are indexed)
   ids: [1, 3, 5, 6, 7, 8]
   # Servo types, one per id (same order as ids)
-  servo_types: ["XC330_T288_T", "XC330_T288_T", "XC330_T288_T", "XC330_T288_T", "XC330_T288_T", "XC330_T288_T"]
+  servo_types: ["XC330_M288_T", "XC330_M288_T", "XC330_M288_T", "XC330_M288_T", "XC330_M288_T", "XL330_M288_T"]
   # Joint directions to match the leader arm, one per id (same order as ids)
-  joint_signs: [-1, 1, 1, 1, 1, 1]
+  joint_signs: [1, 1, 1, 1, 1, 1]
 
 dynamixel_big:
   # USB port name given by the command: ls /dev/serial/by-id/
@@ -22,7 +22,7 @@ dynamixel_big:
 
 arm_teleop:
   # URDF used for creating leader arm dynamics model to compute gravity compensation
-  leader_urdf: "flexiv_teleop_pos45_x.urdf" 
+  leader_urdf: "flexiv_teleop_neg45_x_lighter.urdf" 
   num_arm_joints: 7
   arm_joint_limits_max: [2.8798, 2.3562, 3.0543, 2.7751, 3.0543, 4.6251, 3.0543]
   arm_joint_limits_min: [-2.8798, -2.3562, -3.0543, -1.9548, -3.0543, -1.4835, -3.0543]
@@ -38,7 +38,11 @@ gripper_teleop:
   actuation_range: 10
 
 controller:
-  frequency: 400
+  frequency: 500
+  # Servo health telemetry (temp + current) sample period in seconds. 0.1 = 10 Hz.
+  # read_health() batches all servos into 2 GroupSyncRead transactions, so 10 Hz is
+  # cheap (a few ms/sample, not the ~30 ms of the old per-servo reads). 0 disables.
+  health_log_period: 0.1
   torque_feedback:
     enable: True
     gain: 3.0
@@ -46,14 +50,19 @@ controller:
     motor_scalar: 94.5652173913
   gravity_comp:
     enable: True
-    gain: 0.65
+    gain: 0.6
+    # Gravity comp stays off until every arm joint is within home_tolerance rad of
+    # initial_match_joint_pos; the gain then ramps from 0 to the value above over
+    # ramp_up_time seconds (0 = enable instantly once home is reached).
+    home_tolerance: 10
+    ramp_up_time: 2.0
   null_space_regulation:
-    null_space_joint_target: [0.0, -0.7854, 0.0, -2.356, 0.0, 1.57, 0.0, 0.0]
+    null_space_joint_target: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] # TODO: edit this to home pose of follower arm
     kp: 0.1
     kd: 0.01
   static_friction_comp:
     enable_speed: 0.9
-    gain: 0.6
+    gain: 0.2
   joint_limit_barrier:
     kp: 1.03561658022
     kd: 0.04315069084
@@ -63,6 +72,6 @@ controller:
     kd: 0.04315069084
 
   gripper_feedback:
-    enable: True
+    enable: False
     gain: 0.28328611898
     ema_beta: 0.95

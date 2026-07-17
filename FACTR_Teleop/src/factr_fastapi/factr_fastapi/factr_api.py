@@ -14,6 +14,7 @@
 # The route is registered dynamically in __init__ (NOT a class-body decorator),
 # so each process serves exactly its own side; the port is 5000 + arm_index.
 
+import asyncio
 import threading
 
 import rclpy
@@ -28,8 +29,8 @@ from pydantic import BaseModel
 
 #: DoF+1 placeholder (7 arm joints + trailing gripper) served before a publisher connects.
 _DEFAULT_JOINT_POS = [0.0, 0.0, 0.0, 3.12, 0.0, 0.0, 0.0, 0.0]
-_BASE_PORT = 5000
-API_PORT = 5001
+_BASE_PORT = 5000   # left = 5000 + 0, right = 5000 + 1
+
 
 class JointResponse(BaseModel):
     joint_pos: list[float]
@@ -89,22 +90,42 @@ def _ros_spin(node: Node) -> None:
     node.destroy_node()
 
 
+async def _serve_all(apps_ports):
+    """Run one uvicorn server per (app, port) concurrently in a single event loop."""
+    servers = []
+    for app, port in apps_ports:
+        config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+        server = uvicorn.Server(config)
+        # Ctrl-C is handled at the asyncio.run() level below; per-server signal
+        # handlers would fight (only one server would get the signal, leaving the
+        # other hanging), so disable them here.
+        server.install_signal_handlers = lambda: None
+        servers.append(server.serve())
+    await asyncio.gather(*servers)
+
+
 def main(args=None):
     rclpy.init(args=args)
 
-    app = FastAPI()
-    # 1 is the right arm, 0 is the left arm
-    node_right = FactrAPI(app, 1) 
-    node_left = FactrAPI(app, 0) # reads joint positions of the left arm
+    # One FastAPI app + ROS node per arm, each bound to its own port (left 5000,
+    # right 5001), so this single process serves BOTH arms. Each arm keeps its own
+    # config/topic/route; only its route is registered on its app.
+    app_left, app_right = FastAPI(), FastAPI()
+    node_left = FactrAPI(app_left, 0)    # GET :5000/get_joint_positions_left  <- /joint_pos_left
+    node_right = FactrAPI(app_right, 1)  # GET :5001/get_joint_positions_right <- /joint_pos_right
 
-    left_thread = threading.Thread(target=_ros_spin, args=(node_left,), daemon=True)
-    left_thread.start()
-    right_thread = threading.Thread(target=_ros_spin, args=(node_right,), daemon=True)
-    right_thread.start()
+    for node in (node_left, node_right):
+        threading.Thread(target=_ros_spin, args=(node,), daemon=True).start()
 
-    uvicorn.run(app, port = API_PORT, log_level="warning")
-
-    rclpy.shutdown()
+    try:
+        asyncio.run(_serve_all([
+            (app_left, node_left.port),
+            (app_right, node_right.port),
+        ]))
+    except KeyboardInterrupt:
+        pass
+    finally:
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":
