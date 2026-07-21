@@ -14,7 +14,10 @@ from sensor_msgs.msg import JointState # from ROS2
 # -- FastAPI 
 # from fact import FACTRAPI
 
-from factr_teleop.factr_teleop import FACTRTeleop
+# Relative import so the base class loads from THIS src tree (the launch runs
+# `-m src.factr_teleop...`); a bare `factr_teleop.` import would resolve to the stale
+# colcon install/ copy and miss edits made here (e.g. the master force-gain ramp).
+from .factr_teleop import FACTRTeleop
 
 import numpy as np
 import time

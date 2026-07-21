@@ -12,7 +12,10 @@ import threading
 from std_msgs.msg import String
 from sensor_msgs.msg import JointState # from ROS2
 
-from factr_teleop.factr_teleop_dual_base import FACTRTeleopDualBase
+# Relative import so the base class loads from THIS src tree (the launch runs
+# `-m src.factr_teleop...`); a bare `factr_teleop.` import would resolve to the stale
+# colcon install/ copy and miss edits made here (e.g. the master force-gain ramp).
+from .factr_teleop_dual_base import FACTRTeleopDualBase
 
 import numpy as np
 import time
@@ -65,16 +68,17 @@ class FactrRizonTeleopDualBoard(FACTRTeleopDualBase):
 
         leader_arm_pos, leader_arm_vel, leader_gripper_pos, leader_gripper_vel = self.get_leader_joint_states()
 
-        torque_arm = np.zeros(self.num_arm_joints)
         torque_l, torque_gripper = self.joint_limit_barrier(
             leader_arm_pos, leader_arm_vel, leader_gripper_pos, leader_gripper_vel
         )
-        torque_arm += torque_l
-        torque_arm += self.null_space_regulation(leader_arm_pos, leader_arm_vel)
+        torque_null = self.null_space_regulation(leader_arm_pos, leader_arm_vel)
+        torque_gravity = np.zeros(self.num_arm_joints)
+        torque_friction = np.zeros(self.num_arm_joints)
 
         if self.enable_gravity_comp:
-            torque_arm += self.gravity_compensation(leader_arm_pos, leader_arm_vel)
-            torque_arm += self.friction_compensation(leader_arm_vel)
+            torque_gravity = self.gravity_compensation(leader_arm_pos, leader_arm_vel)
+            torque_friction = self.friction_compensation(leader_arm_vel)
+        torque_arm = torque_l + torque_null + torque_gravity + torque_friction
         
         # if self.enable_torque_feedback:
         #     print(self.get_leader_arm_external_joint_torque())
@@ -85,7 +89,13 @@ class FactrRizonTeleopDualBoard(FACTRTeleopDualBase):
         #     gripper_feedback = self.get_leader_gripper_feedback()
         #     torque_gripper += self.gripper_feedback(leader_gripper_pos, leader_gripper_vel, gripper_feedback)
 
-        self.set_leader_joint_torque(torque_arm, torque_gripper)
+        # Master output gain (ramped 0->1 on enable) scales EVERY force term at once.
+        gain = self._update_force_gain()
+        self._capture_enable_tick(
+            leader_arm_pos, leader_arm_vel, torque_l, torque_null,
+            torque_gravity, torque_friction, torque_arm, gain,
+        )
+        self.set_leader_joint_torque(torque_arm * gain, torque_gripper * gain)
 
         # update joint positions
         joint_pos = self.get_leader_joint_pos()
@@ -129,10 +139,10 @@ class FactrRizonTeleopDualBoard(FACTRTeleopDualBase):
         
     def get_leader_gripper_feedback(self):
         pass
-    
+
     def gripper_feedback(self, leader_gripper_pos, leader_gripper_vel, gripper_feedback):
         pass
-    
+
     def get_leader_arm_external_joint_torque(self):
         pass
 
@@ -184,5 +194,3 @@ def main(args=None):
 
 if __name__ == "__main__":
     main()
-
-    

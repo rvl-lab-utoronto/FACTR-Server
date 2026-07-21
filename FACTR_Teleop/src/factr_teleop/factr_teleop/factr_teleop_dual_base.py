@@ -4,6 +4,7 @@ Read before making any changes to this file!
 The class FACTRTeleopDualBase is intended for controlling the Dynamixel servos with two seperate boards. It is to be used together with the factr_rizon_dual_board.py file. 
 """
 
+import json
 import os
 import time
 import yaml
@@ -13,6 +14,8 @@ import pinocchio as pin
 from abc import ABC, abstractmethod
 
 from rclpy.node import Node
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from std_msgs.msg import Float64, String
 from python_utils.utils import get_workspace_root
 from factr_teleop.dynamixel.driver import DynamixelDriver
 
@@ -78,6 +81,7 @@ class FACTRTeleopDualBase(Node, ABC):
         self.dt = 1 / self.config["controller"]["frequency"]
         
         self._prepare_dynamixel()
+        self._model_joint_signs = self.joint_signs.copy()
         self._prepare_inverse_dynamics()
 
         # Reading from /configs/franka_example.yaml
@@ -100,25 +104,33 @@ class FACTRTeleopDualBase(Node, ABC):
         self.gripper_pos_prev = 0.0
         self.gripper_pos = 0.0
 
-        # gravity comp
-        # Gravity comp stays disabled (scale 0) until the arm is manually brought to its
-        # home pose (initial_match_joint_pos); the gain then ramps linearly from 0 to the
-        # configured value over ramp_up_time seconds so torque fades in instead of
-        # stepping onto a limp arm. See _gravity_comp_ramp_scale().
+        # gravity comp (per-component weight only; the master gain below ramps it in)
         gravity_comp_config = self.config["controller"]["gravity_comp"]
         self.enable_gravity_comp = gravity_comp_config["enable"]
         self.gravity_comp_modifier = gravity_comp_config["gain"]
-        self.gravity_comp_home_tolerance = gravity_comp_config.get("home_tolerance", 0.15)
-        self.gravity_comp_ramp_up_time = gravity_comp_config.get("ramp_up_time", 2.0)
-        self.gravity_comp_at_home = False
-        self.gravity_comp_scale = 0.0
-        self._gravity_comp_wait_log_time = 0.0
         self.tau_g = np.zeros(self.num_arm_joints)
+
+        # master output gain -- a single [0, 1] multiplier applied to EVERY force this
+        # controller commands (gravity comp, friction comp, null-space regulation, the
+        # joint-limit barrier, force feedback). It starts at 0 so the arm boots energized
+        # but limp (zero commanded torque) and ramps to a target the FACTR API relay's
+        # POST /{enable,disable}_grav_comp_<side> triggers publish on /factr_gain_<side>.
+        # The ramp advances at 1/force_gain_ramp_time per second; see _update_force_gain().
+        self.force_gain_ramp_time = self.config["controller"].get("force_gain_ramp_time", 1.0)
+        self.force_gain = 0.0
+        self.force_gain_target = 0.0
+        self._force_gain_last_update = None   # seeded on the first _update_force_gain() tick
+        self._enable_capture_remaining = 0
+        self._enable_capture_samples = []
         # friction compdriver_small
         self.stiction_comp_enable_speed = self.config["controller"]["static_friction_comp"]["enable_speed"]
         self.stiction_comp_gain = self.config["controller"]["static_friction_comp"]["gain"]
         self.stiction_dither_flag = np.ones((self.num_arm_joints), dtype=bool)
         # joint limit barrier:
+        # Set controller.joint_limit_barrier.enable: false to switch off the leader-side
+        # end-stop repulsion entirely (no follower-range protection from FACTR). Defaults
+        # to on if the key is absent.
+        self.joint_limit_barrier_enable = self.config["controller"]["joint_limit_barrier"].get("enable", True)
         self.joint_limit_kp = self.config["controller"]["joint_limit_barrier"]["kp"]
         self.joint_limit_kd = self.config["controller"]["joint_limit_barrier"]["kd"]
         # null space regulation
@@ -133,13 +145,32 @@ class FACTRTeleopDualBase(Node, ABC):
         # gripper feedback
         self.enable_gripper_feedback = self.config["controller"]["gripper_feedback"]["enable"]
         
-        # needs to be implemented tarm_joint_limits_max: [4.5, 4.131, 6, 6, 8, 7.77, 3.32]  
         self.set_up_communication()
 
-        # calibrate the leader arm joints before starting
+        # master output-gain target, published over ROS by the FACTR API relay's
+        # enable/disable_grav_comp_<side> triggers; the loop ramps self.force_gain toward it.
+        # Its OWN callback group: without it this subscription shares the node's default
+        # group with the 500 Hz control-loop timer, which starves it under the
+        # MultiThreadedExecutor -- the target gets published but the callback never runs,
+        # so the ramp never starts. A separate group lets the executor run it concurrently.
+        side = "left" if arm_index == 0 else "right"
+        self.side = side
+        self._gain_cb_group = MutuallyExclusiveCallbackGroup()
+        self.create_subscription(
+            Float64, f"/factr_gain_{side}", self._on_force_gain_target, 10,
+            callback_group=self._gain_cb_group,
+        )
+        # Publish the LIVE master gain so the FACTR API can serve it (GET /status_<side>)
+        # and the dashboard can gate collection behind grav comp. Low-rate timer in the
+        # gain group so it never contends with the 500 Hz control loop.
+        self._gain_state_pub = self.create_publisher(Float64, f"/factr_gain_state_{side}", 10)
+        self.create_timer(0.1, self._publish_gain_state, callback_group=self._gain_cb_group)
+        self._calibration_snapshot = {}
+        self._diagnostics_pub = self.create_publisher(String, f"/factr_diagnostics_{side}", 10)
+        self.create_timer(0.5, self._publish_diagnostics, callback_group=self._gain_cb_group)
+
+        # FACTR owns gravity-model calibration, using its configured physical home pose.
         self._get_dynamixel_offsets()
-        # ensure the leader and the follower arms have the same joint positions before starting
-        self._match_start_pos()
 
         # --- servo health diagnostics (throttled; for torque-dropout debugging) ---
         # Reads temperature / present current / hardware-error per servo at low rate and
@@ -319,16 +350,49 @@ class FACTRTeleopDualBase(Node, ABC):
 
     def _get_dynamixel_offsets(self, verbose=True):
         """
-        Calibrates the Dynamixel servos with respect to the Franka arm to ensure the joint
-        position readings of the leader arm correspond to those of the follower arm.
+        Establishes the offset between each Dynamixel servo's raw reading and the follower
+        joint convention, so the leader joint angles fed to gravity comp match the follower.
 
-        Before launching this program, the leader arm should be manually placed in a 
-        configuration roughly corresponding to the follower's calibration position 
-        described in self.calibration_joint_pos (within ±90 degrees per joint).
+        Each arm-joint offset is a fixed multiple of pi/2 set by the servo-horn mounting, so
+        it is identical on every launch. It is therefore captured ONCE and pinned in the
+        config under ``arm_teleop.initialization.joint_offsets`` (radians, one per arm joint).
+        When that key is present it is used directly -- gravity comp is correct IMMEDIATELY
+        at launch with NO need to pose the leader at calibration_joint_pos first.
+
+        The key is mandatory. The current launch pose is never used to derive calibration;
+        a missing saved measurement is a fatal configuration error.
+
+        NOTE: these offsets affect ONLY the internal control-loop / grav-comp joint angles;
+        the leader stream published to the follower is the raw servo reading (the DFC side
+        applies its own offset convention to that), so pinning them here is safe.
         """
-        # warm up both boards
+        # Warm up both boards before measuring the configured calibration pose.
         for _ in range(10):
             self._read_merged_pos_vel()
+        curr_joints, _ = self._read_merged_pos_vel()
+
+        # With saved arm calibration, do not infer any arm offset from the launch pose.
+        # The gripper remains a raw signed servo angle in this path.
+        saved = self.config["arm_teleop"]["initialization"].get("joint_offsets", None)
+        if saved is not None:
+            arm_offsets = np.asarray(saved, dtype=float)
+            assert arm_offsets.shape[0] == self.num_arm_joints, \
+                "arm_teleop.initialization.joint_offsets length must equal num_arm_joints"
+            self.joint_offsets = np.concatenate([arm_offsets, [0.0]])
+            self._set_calibration_snapshot(curr_joints)
+            self._validate_dfc_factr_transform()
+            if verbose:
+                offsets_str = ", ".join(f"{x:.3f}" for x in self.joint_offsets)
+                self.get_logger().info(
+                    f"FACTR TELEOP {self.name}: using saved joint_offsets, no pose needed: "
+                    f"[{offsets_str}]"
+                )
+            return
+
+        raise RuntimeError(
+            f"FACTR TELEOP {self.name}: missing saved joint_offsets; "
+            "launch-pose calibration is forbidden"
+        )
 
         def _get_error(calibration_joint_pos, offset, index, joint_state):
             joint_sign_i = self.joint_signs[index]
@@ -336,41 +400,163 @@ class FACTRTeleopDualBase(Node, ABC):
             start_i = calibration_joint_pos[index]
             return np.abs(joint_i - start_i)
 
-        # get arm offsets
-        self.joint_offsets = []
-
-        curr_joints, _ = self._read_merged_pos_vel()
-
-
+        # -- fallback: no saved offsets -> compute from the current (posed) arm --
+        arm_offsets = []
         for i in range(self.num_arm_joints):
-            print("Inside method _get_dynamixel_offsets", self.joint_offsets)
-
             best_offset = 0
             best_error = 1e9
             # intervals of pi/2
-            for offset in np.linspace(-20 * np.pi, 20 * np.pi, 20 * 4 + 1):  
+            for offset in np.linspace(-20 * np.pi, 20 * np.pi, 20 * 4 + 1):
                 error = _get_error(self.calibration_joint_pos, offset, i, curr_joints)
                 if error < best_error:
                     best_error = error
                     best_offset = offset
-            self.joint_offsets.append(best_offset)
+            arm_offsets.append(best_offset)
 
-        print(self.joint_offsets)
-
-        # get gripper offset:
-        curr_gripper_joint = curr_joints[-1]
-        self.joint_offsets.append(curr_gripper_joint)
-
-        self.joint_offsets = np.asarray(self.joint_offsets)
+        # Friday behavior: zero the gripper at the same calibration pose/read.
+        self.joint_offsets = np.asarray(arm_offsets + [float(curr_joints[-1])])
+        self._set_calibration_snapshot(curr_joints)
+        self._validate_dfc_factr_transform()
         if verbose:
-            print(self.joint_offsets)
-            print("best offsets               : ", [f"{x:.3f}" for x in self.joint_offsets])
-            print(
-                "best offsets function of pi: ["
-                + ", ".join([f"{int(np.round(x/(np.pi/2)))}*np.pi/2" for x in self.joint_offsets])
-                + " ]",
+            offsets_str = ", ".join(f"{x:.3f}" for x in self.joint_offsets)
+            offsets_pi = ", ".join(
+                f"{int(np.round(x/(np.pi/2)))}*np.pi/2" for x in self.joint_offsets
             )
-    
+            self.get_logger().info(f"FACTR TELEOP {self.name}: best offsets: [{offsets_str}]")
+            self.get_logger().info(f"FACTR TELEOP {self.name}: best offsets (pi): [{offsets_pi}]")
+            # Paste-ready line so the operator can pin these and skip posing next launch.
+            save_str = ", ".join(f"{x:.4f}" for x in arm_offsets)
+            self.get_logger().warn(
+                f"FACTR TELEOP {self.name}: no saved joint_offsets in config -- computed from "
+                f"the current pose. To skip posing on future launches, add under "
+                f"arm_teleop.initialization:  joint_offsets: [{save_str}]"
+            )
+
+    def _set_calibration_snapshot(self, curr_joints):
+        init = self.config["arm_teleop"]["initialization"]
+        model_q = (
+            curr_joints[:self.num_arm_joints]
+            - self.joint_offsets[:self.num_arm_joints]
+        ) * self.joint_signs[:self.num_arm_joints]
+        self._calibration_snapshot = {
+            "side": self.side,
+            "captured_monotonic_ns": time.monotonic_ns(),
+            "raw_q_rad": curr_joints[:self.num_arm_joints].tolist(),
+            "configured_home_q_rad": self.calibration_joint_pos.tolist(),
+            "joint_offsets_rad": self.joint_offsets[:self.num_arm_joints].tolist(),
+            "model_signs": self.joint_signs[:self.num_arm_joints].tolist(),
+            "model_q_rad": model_q.tolist(),
+            "dfc_home_q_rad": list(init.get("dfc_home_joint_pos", [])),
+            "dfc_to_factr_signs": list(init.get("dfc_to_factr_signs", [])),
+            "dfc_to_factr_offset_rad": list(init.get("dfc_to_factr_offset_rad", [])),
+            "dfc_raw_offsets_deg": list(init.get("dfc_raw_offsets_deg", [])),
+            "dfc_sign_flip_joints": list(init.get("dfc_sign_flip_joints", [])),
+            "dfc_wrap_deg": init.get("dfc_wrap_deg"),
+            "dfc_drop_trailing": init.get("dfc_drop_trailing"),
+            "dfc_gripper_open": init.get("dfc_gripper_open"),
+            "dfc_gripper_closed": init.get("dfc_gripper_closed"),
+        }
+
+    def _validate_dfc_factr_transform(self):
+        init = self.config["arm_teleop"]["initialization"]
+        dfc_home = np.asarray(init["dfc_home_joint_pos"], dtype=float)
+        signs = np.asarray(init["dfc_to_factr_signs"], dtype=float)
+        bias = np.asarray(init["dfc_to_factr_offset_rad"], dtype=float)
+        if any(x.shape != (self.num_arm_joints,) for x in (dfc_home, signs, bias)):
+            raise RuntimeError("DFC/FACTR transform vectors must have seven joints")
+        if not np.all(np.isin(signs, (-1.0, 1.0))):
+            raise RuntimeError("DFC/FACTR transform signs must be -1 or +1")
+        mapped = signs * dfc_home + bias
+        if not np.allclose(mapped, self.calibration_joint_pos, atol=1e-6):
+            raise RuntimeError(f"DFC home does not map to FACTR home: {mapped.tolist()}")
+        raw_offsets_deg = np.asarray(init["dfc_raw_offsets_deg"], dtype=float)
+        flips = [int(i) for i in init["dfc_sign_flip_joints"]]
+        drop = int(init["dfc_drop_trailing"])
+        gripper_open = float(init["dfc_gripper_open"])
+        gripper_closed = float(init["dfc_gripper_closed"])
+        if raw_offsets_deg.shape != (self.num_arm_joints,) or drop != 1:
+            raise RuntimeError("raw FACTR/DFC convention must contain seven offsets and drop one field")
+        if len(set(flips)) != len(flips) or any(i < 0 or i >= self.num_arm_joints for i in flips):
+            raise RuntimeError(f"invalid DFC sign-flip indices: {flips}")
+        if not np.all(np.isfinite(raw_offsets_deg)) or not np.isfinite([gripper_open, gripper_closed]).all() or gripper_open == gripper_closed:
+            raise RuntimeError("raw FACTR/DFC convention contains invalid values")
+        raw_home = self.joint_offsets[:self.num_arm_joints] + self.calibration_joint_pos / self.joint_signs[:self.num_arm_joints]
+        raw_home_deg = np.degrees(raw_home) + raw_offsets_deg
+        raw_home_deg[flips] *= -1.0
+        if bool(init["dfc_wrap_deg"]):
+            raw_home_deg = (raw_home_deg + 180.0) % 360.0 - 180.0
+        raw_mapped_home = np.radians(raw_home_deg)
+        if not np.allclose(raw_mapped_home, dfc_home, atol=1e-6):
+            raise RuntimeError(f"raw FACTR home does not map to DFC home: {raw_mapped_home.tolist()}")
+        self.get_logger().info(
+            f"FACTR {self.side} convention: dfc_home={dfc_home.tolist()} -> "
+            f"factr_home={mapped.tolist()} raw_home={raw_home.tolist()} "
+            f"raw_to_dfc_home={raw_mapped_home.tolist()} signs={signs.tolist()} bias={bias.tolist()}"
+        )
+
+    def _on_calibration(self, msg):
+        """
+        Apply a gravity-comp calibration pushed from DFC (the single source of truth).
+
+        ``msg.data`` is DFC's ``arms.<side>.convention.offsets_deg`` -- the per-arm-joint
+        offset (degrees) mapping this leader's raw servo reading into the follower joint
+        convention. DFC's sign flips belong only to follower commands; gravity
+        compensation retains FACTR's native mechanism/model signs and fixed URDF bias:
+
+            joint_offset[i] = -radians(offsets_deg[i])
+                              - model_sign[i] * model_bias[i]
+
+        Rebinds self.joint_offsets to a fresh array (never mutates in place) so the 500 Hz
+        control loop reading it concurrently always sees a complete old-or-new array. The
+        gripper offset stays pinned to 0.0.
+        """
+        data = np.asarray(msg.data, dtype=float)
+        if data.shape[0] != 2 * self.num_arm_joints:
+            self.get_logger().warn(
+                f"FACTR TELEOP {self.name}: ignoring calibration push of length "
+                f"{data.shape[0]} (expected {2 * self.num_arm_joints})"
+            )
+            return
+        offsets_deg = data[:self.num_arm_joints]
+        signs = data[self.num_arm_joints:]
+        if not np.all(np.isin(signs, (-1.0, 1.0))):
+            self.get_logger().warn(f"FACTR TELEOP {self.name}: invalid DFC joint signs")
+            return
+        model_bias = np.asarray(
+            self.config["arm_teleop"]["initialization"].get(
+                "model_joint_bias", [0.0] * self.num_arm_joints
+            ),
+            dtype=float,
+        )
+        if model_bias.shape != (self.num_arm_joints,) or not np.all(np.isfinite(model_bias)):
+            self.get_logger().error(
+                f"FACTR TELEOP {self.name}: invalid model_joint_bias; refusing calibration"
+            )
+            return
+        model_signs = self._model_joint_signs[:self.num_arm_joints]
+        arm_offsets = -np.radians(offsets_deg) - model_signs * model_bias
+        self.joint_signs = self._model_joint_signs.copy()
+        self.joint_offsets = np.concatenate([arm_offsets, [0.0]])
+        self._dfc_calibration_received = True
+        dfc_zero_raw = -np.radians(offsets_deg)
+        model_at_dfc_zero = model_signs * (dfc_zero_raw - arm_offsets)
+        offsets_pi_over_2 = arm_offsets / (np.pi / 2.0)
+        self.get_logger().info(
+            f"FACTR CALIBRATION AUDIT {self.name}: "
+            f"dfc_offsets_deg={offsets_deg.tolist()} "
+            f"dfc_follower_signs={signs.tolist()} "
+            f"model_signs={model_signs.tolist()} "
+            f"model_bias_rad={model_bias.tolist()} "
+            f"joint_offsets_rad={arm_offsets.tolist()} "
+            f"offsets_pi_over_2={offsets_pi_over_2.tolist()} "
+            f"model_at_dfc_zero_rad={model_at_dfc_zero.tolist()}"
+        )
+        offsets_str = ", ".join(f"{x:.3f}" for x in self.joint_offsets)
+        self.get_logger().info(
+            f"FACTR TELEOP {self.name}: applied DFC calibration passthrough -> "
+            f"joint_offsets [{offsets_str}]"
+        )
+
     def _match_start_pos(self):
         """
         Waits until the leader arm is manually moved to roughly the same configuration a
@@ -474,9 +660,12 @@ this is not what I want to
 
         This method implements a simplified control law compared to the one described in 
         Section IX.B of the paper, while achieving the same protective effect. It applies 
-        repulsive torques proportional to the distance from the joint limits and the joint 
+        repulsive torques proportional to the distance from the joint limits and the joint
         velocity when limits are approached or exceeded.
         """
+        # Disabled from config -> no arm or gripper end-stop torque at all.
+        if not self.joint_limit_barrier_enable:
+            return np.zeros(self.num_arm_joints), 0.0
         exceed_max_mask = arm_joint_pos > self.arm_joint_limits_max
         tau_l = (-self.joint_limit_kp * (arm_joint_pos - self.arm_joint_limits_max) \
             - self.joint_limit_kd * arm_joint_vel) * exceed_max_mask
@@ -484,66 +673,107 @@ this is not what I want to
         tau_l += (-self.joint_limit_kp * (arm_joint_pos - self.arm_joint_limits_min) \
             - self.joint_limit_kd * arm_joint_vel) * exceed_min_mask
         
-        if gripper_joint_pos > self.gripper_limit_max:
-            tau_l_gripper = -self.joint_limit_kp * (gripper_joint_pos - self.gripper_limit_max) \
-                - self.joint_limit_kd * gripper_joint_vel
-        elif gripper_joint_pos < self.gripper_limit_min:
-            tau_l_gripper = -self.joint_limit_kp * (gripper_joint_pos - self.gripper_limit_min) \
-                - self.joint_limit_kd * gripper_joint_vel
-        else:
-            tau_l_gripper = 0.0
+        # gripper joint-limit barrier DISABLED: no repulsive end-stop torque on the
+        # gripper trigger (was: repel above gripper_limit_max / below gripper_limit_min).
+        # Required by the gripper-zeroing removal in _get_dynamixel_offsets -- with the
+        # offset pinned to 0, gripper_pos is the raw servo angle and would otherwise trip
+        # this barrier at boot.
+        tau_l_gripper = 0.0
         return tau_l, tau_l_gripper
 
-    def _gravity_comp_ramp_scale(self, arm_joint_pos):
-        """
-        Gates gravity compensation on the arm reaching its home pose, then ramps it in.
+    def _on_force_gain_target(self, msg):
+        """Set the master output-gain target (clamped to [0, 1]); the loop ramps to it."""
+        new_target = float(np.clip(msg.data, 0.0, 1.0))
+        if new_target > 0.0 and self.force_gain_target <= 0.0:
+            self._enable_capture_remaining = 25
+            self._enable_capture_samples = []
+        self.force_gain_target = new_target
+        self.get_logger().info(
+            f"FACTR TELEOP {self.name}: force gain target -> {self.force_gain_target:.3f}"
+        )
 
-        Returns the scale in [0, 1] applied to the configured gravity comp gain. The
-        scale is 0 until every arm joint is within ``gravity_comp_home_tolerance`` rad
-        of the home pose (``initial_match_joint_pos``). Once home is reached the gate
-        latches (moving away afterwards does not disable gravity comp) and the scale
-        ramps linearly from 0 to 1 over ``gravity_comp_ramp_up_time`` seconds.
-        """
-        if not self.gravity_comp_at_home:
-            home_error = np.abs(
-                arm_joint_pos - self.initial_match_joint_pos[0:self.num_arm_joints]
-            )
-            if np.max(home_error) > self.gravity_comp_home_tolerance:
-                now = time.time()
-                if now - self._gravity_comp_wait_log_time >= 1.0:
-                    self._gravity_comp_wait_log_time = now
-                    worst = int(np.argmax(home_error))
-                    self.get_logger().info(
-                        f"FACTR TELEOP {self.name}: gravity comp off -- bring the arm to "
-                        f"its home pose (joint {worst + 1} is {home_error[worst]:.2f} rad away)"
-                    )
-                return 0.0
-            self.gravity_comp_at_home = True
+    def _publish_gain_state(self):
+        """Publish the live master output gain so the FACTR API can serve it as status."""
+        msg = Float64()
+        msg.data = float(self.force_gain)
+        self._gain_state_pub.publish(msg)
+
+    def _publish_diagnostics(self):
+        """Republish the immutable startup-calibration snapshot at low rate."""
+        if self._calibration_snapshot:
+            msg = String()
+            payload = dict(self._calibration_snapshot)
+            payload["enable_samples"] = self._enable_capture_samples
+            msg.data = json.dumps(payload, separators=(",", ":"))
+            self._diagnostics_pub.publish(msg)
+
+    def _capture_enable_tick(self, q, dq, tau_limit, tau_null, tau_gravity,
+                             tau_friction, tau_total, gain):
+        if self._enable_capture_remaining <= 0:
+            return
+        signs = self.joint_signs[:self.num_arm_joints]
+        offsets = self.joint_offsets[:self.num_arm_joints]
+        sample = {
+            "stamp_monotonic_ns": time.monotonic_ns(),
+            "raw_q_rad": (offsets + q / signs).tolist(),
+            "model_q_rad": q.tolist(),
+            "model_dq_rad_s": dq.tolist(),
+            "home_error_rad": (q - self.initial_match_joint_pos[:self.num_arm_joints]).tolist(),
+            "limit_torque_nm": tau_limit.tolist(),
+            "null_torque_nm": tau_null.tolist(),
+            "gravity_torque_nm": tau_gravity.tolist(),
+            "friction_torque_nm": tau_friction.tolist(),
+            "total_torque_pre_gain_nm": tau_total.tolist(),
+            "force_gain": float(gain),
+            "applied_torque_nm": (tau_total * gain).tolist(),
+        }
+        samples = [*self._enable_capture_samples, sample]
+        self._enable_capture_samples = samples
+        self._enable_capture_remaining -= 1
+        if len(samples) == 1:
             self.get_logger().info(
-                f"FACTR TELEOP {self.name}: home pose reached, ramping gravity comp "
-                f"to gain {self.gravity_comp_modifier} over {self.gravity_comp_ramp_up_time}s"
+                "FACTR ENABLE CAPTURE " + json.dumps(sample, separators=(",", ":"))
             )
-        if self.gravity_comp_scale < 1.0:
-            if self.gravity_comp_ramp_up_time <= 0.0:
-                self.gravity_comp_scale = 1.0
-            else:
-                self.gravity_comp_scale = min(
-                    1.0, self.gravity_comp_scale + self.dt / self.gravity_comp_ramp_up_time
-                )
-        return self.gravity_comp_scale
+
+    def _update_force_gain(self):
+        """Advance the master output gain toward its target and return it.
+
+        Moves at a constant 1/force_gain_ramp_time per second (so a full 0->1 enable takes
+        force_gain_ramp_time seconds). Uses the MONOTONIC clock so a wall-clock step (e.g.
+        NTP) can never make the elapsed time negative and invert/amplify the step. The first
+        call only seeds the baseline, so the long blocking calibration before the control
+        loop starts can't turn into a one-tick jump. force_gain is clamped to [0, 1] as a
+        hard invariant -- it multiplies every force the loop commands. Ramps up and down.
+        """
+        now = time.monotonic()
+        if self._force_gain_last_update is None:
+            self._force_gain_last_update = now
+            return self.force_gain
+        elapsed = now - self._force_gain_last_update
+        self._force_gain_last_update = now
+        if self.force_gain_ramp_time <= 0.0:
+            self.force_gain = self.force_gain_target
+        else:
+            step = elapsed / self.force_gain_ramp_time
+            if self.force_gain < self.force_gain_target:
+                self.force_gain = min(self.force_gain_target, self.force_gain + step)
+            elif self.force_gain > self.force_gain_target:
+                self.force_gain = max(self.force_gain_target, self.force_gain - step)
+        self.force_gain = min(1.0, max(0.0, self.force_gain))
+        return self.force_gain
 
     def gravity_compensation(self, arm_joint_pos, arm_joint_vel):
         """
         Computes joint torque for gravity compensation using inverse dynamics.
         This method uses the Recursive Newton-Euler Algorithm (RNEA), provided by the
         Pinocchio library, to calculate the torques required to counteract gravity
-        at the current joint states. The result is scaled by a modifier to tune the
-        compensation strength.
+        at the current joint states. The result is scaled by the configured
+        ``gravity_comp_modifier`` weight.
 
-        The output is zero until the arm is brought to its home pose, after which it
-        ramps in over ``gravity_comp_ramp_up_time`` seconds (see
-        _gravity_comp_ramp_scale()). Since ``self.tau_g`` carries the same scale,
-        friction_compensation() fades in with it.
+        The overall fade-in is handled by the master output gain applied in the control
+        loop (see _update_force_gain()), which scales this and every other force term
+        together; ``self.tau_g`` is stored unscaled by that master gain so
+        friction_compensation() tracks the raw gravity-comp magnitude.
 
         This implementation corresponds to the gravity compensation strategy
         described in Section III.C of the paper.
@@ -552,7 +782,7 @@ this is not what I want to
             self.pin_model, self.pin_data,
             arm_joint_pos, arm_joint_vel, np.zeros_like(arm_joint_vel)
         )
-        self.tau_g *= self.gravity_comp_modifier * self._gravity_comp_ramp_scale(arm_joint_pos)
+        self.tau_g *= self.gravity_comp_modifier
         return self.tau_g
 
     def friction_compensation(self, arm_joint_vel):

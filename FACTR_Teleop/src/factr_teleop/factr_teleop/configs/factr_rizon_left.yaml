@@ -21,11 +21,25 @@ arm_teleop:
   arm_joint_limits_min: [-2.8798, -2.3562, -3.0543, -1.9548, -3.0543, -1.4835, -3.0543]
   arm_joint_limits_safety_margin: 0.1
   initialization:
-    # The expected leader arm joint position before launching the script
+    # FACTR dynamics-model home.
     calibration_joint_pos: [0.0, 0.0, 0.0, 1.57, 0.0, 0.0, 0.0]
-    # The leader arm must be brought to this joint position before the follower starts mirroring the leader
+    # Same measured physical home, represented in canonical DFC/Rizon coordinates.
+    dfc_home_joint_pos: [0.2085668456, 0.1165879940, 0.1303760951, 1.0853220667, 0.0230383461, 0.0076794487, -0.2453932928]
+    # q_factr = dfc_to_factr_signs * q_dfc + dfc_to_factr_offset_rad.
+    # Joint 6 changes sign because DFC flips it and the FACTR mechanism does not.
+    dfc_to_factr_signs: [1, 1, 1, 1, 1, -1, 1]
+    dfc_to_factr_offset_rad: [-0.2085668456, -0.1165879940, -0.1303760951, 0.4846779333, -0.0230383461, 0.0076794487, 0.2453932928]
+    # Complete raw FACTR payload -> canonical DFC/Rizon stream convention.
+    dfc_raw_offsets_deg: [-78.05, 96.68, 97.47, 152.23, 1.32, 89.56, 75.94]
+    dfc_sign_flip_joints: [5]
+    dfc_wrap_deg: true
+    dfc_drop_trailing: 1
+    dfc_gripper_open: 1.0799
+    dfc_gripper_closed: 1.6153
+    # FACTR raw Dynamixel -> dynamics-model offsets from the working grav-comp run.
+    # These are calibration offsets, not raw encoder readings from a captured pose.
+    joint_offsets: [1.5707963268, 4.7123889804, 4.7123889804, 3.1415926536, 0.0, 4.7123889804, 4.7123889804]
     initial_match_joint_pos: [0.0, 0.0, 0.0, 1.57, 0.0, 0.0, 0.0]
-  
 gripper_teleop:
   # The maximum range (in rad) of the leader gripper trigger
   actuation_range: 0.8
@@ -41,14 +55,14 @@ controller:
     gain: 3.0
     damping: 0.0
     motor_scalar: 94.5652173913
+  # Seconds for the master output gain to ramp 0->1 when grav comp is enabled from the
+  # dashboard (rate = 1/force_gain_ramp_time per second; scales every force term at once).
+  force_gain_ramp_time: 1.0
   gravity_comp:
     enable: True
-    gain: 0.5
-    # Gravity comp stays off until every arm joint is within home_tolerance rad of
-    # initial_match_joint_pos; the gain then ramps from 0 to the value above over
-    # ramp_up_time seconds (0 = enable instantly once home is reached).
-    home_tolerance: 10
-    ramp_up_time: 2.0
+    # Per-component weight on the gravity-comp torque. Overall fade-in is the master output
+    # gain (force_gain_ramp_time above); there is no per-grav-comp home-pose gate anymore.
+    gain: 0.55
   null_space_regulation:
     null_space_joint_target: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] # TODO: edit this to home pose of follower arm
     kp: 0.1
@@ -57,6 +71,8 @@ controller:
     enable_speed: 0.9
     gain: 0.2
   joint_limit_barrier:
+    # Disabled: no leader-side end-stop repulsion (no follower-range protection from FACTR).
+    enable: false
     kp: 1.03561658022
     kd: 0.04315069084
   joint_position_control:
