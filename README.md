@@ -25,3 +25,17 @@ DFC straight-up home is `[0,0,0,0,0,0,0]`; the corresponding FACTR model referen
 `[0,0,0,pi/2,0,0,0]`. The explicit joint-4 offset is intentional.
 The saved offsets are reused at every launch; the leader may start in any pose. Its first
 reading is captured for diagnostics only and never recalibrates or gates gravity compensation.
+
+## Diagnostics
+
+The teleop nodes publish their full diagnostics on `/factr_diagnostics_<side>` (the
+immutable startup-calibration snapshot plus the 25-tick post-enable capture) and the
+live master gain on `/factr_gain_state_<side>`. The API relay streams both to Rerun
+under the dedicated application id `factr-diagnostics` — a separate recording beside
+DFC's `dual-flexiv-experiments` in the same embedded viewer (sink URL from
+`FACTR_RERUN_URL`, defaulting to the DFC dashboard's gRPC proxy at
+`rerun+http://127.0.0.1:9876/proxy`). DFC never polls diagnostics over HTTP; there is
+no diagnostics endpoint. `rerun-sdk` is an optional dependency of the relay
+(`/usr/bin/python3 -m pip install --user rerun-sdk==0.34.1`, matching the DFC
+environment's version): without it the relay logs one warning and serves everything
+else as usual.

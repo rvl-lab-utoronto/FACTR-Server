@@ -32,6 +32,10 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ValidationError, field_validator
 
+# Relative import so the publisher loads from THIS src tree when launched as
+# `-m src.factr_fastapi.factr_fastapi.factr_api` (see factr_teleop's READMEs).
+from . import factr_rerun
+
 
 #: DoF+1 placeholder (7 arm joints + trailing gripper) served before a publisher connects.
 _DEFAULT_JOINT_POS = [0.0, 0.0, 0.0, 3.12, 0.0, 0.0, 0.0, 0.0]
@@ -101,7 +105,6 @@ class DiagnosticsStatus(BaseModel):
     dfc_drop_trailing: int | None = None
     dfc_gripper_open: float | None = None
     dfc_gripper_closed: float | None = None
-    enable_samples: list[dict] = []
 
 
 def _side_for(arm_index: int) -> str:
@@ -149,6 +152,9 @@ class FactrAPI(Node):
         self.diagnostics: dict = {}
         self.diagnostics_version = 0
         self.lock = threading.Lock()
+        #: Shared per-process Rerun sink; both sides feed one recording. Never
+        #: raises — without rerun-sdk (or a reachable proxy) it self-disables.
+        self.rerun = factr_rerun.shared_publisher(self.get_logger())
 
         self.create_subscription(JointState, self.topic, self._update_joint_pos, 10)
         # The teleop reports its LIVE master gain here; served at GET /status_<side>.
@@ -339,6 +345,7 @@ class FactrAPI(Node):
     def _update_gain_state(self, msg: Float64) -> None:
         with self.lock:
             self.force_gain = float(msg.data)
+        self.rerun.publish_gain(self.side, float(msg.data))
 
     def _update_diagnostics(self, msg: String) -> None:
         try:
@@ -350,6 +357,7 @@ class FactrAPI(Node):
             with self.lock:
                 self.diagnostics = payload
                 self.diagnostics_version += 1
+            self.rerun.publish_diagnostics(self.side, payload)
 
 
 def _ros_spin(node: Node) -> None:

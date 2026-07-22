@@ -58,6 +58,18 @@ class FakeLogger:
         self.warnings.append(msg)
 
 
+class FakeRerun:
+    def __init__(self):
+        self.diagnostics = []
+        self.gains = []
+
+    def publish_diagnostics(self, side, payload):
+        self.diagnostics.append((side, payload))
+
+    def publish_gain(self, side, gain):
+        self.gains.append((side, gain))
+
+
 def _relay(side="left"):
     relay = SimpleNamespace(
         side=side,
@@ -148,3 +160,28 @@ def test_post_force_feedback_publishes_and_acks():
     assert ack.space == "joint"
     assert ack.dof == 3
     assert [list(m.effort) for m in relay.force_feedback_pub.msgs] == [[0.0, 1.0, -2.0]]
+
+
+def test_diagnostics_feed_both_websocket_cache_and_rerun():
+    relay = _relay()
+    relay.rerun = FakeRerun()
+    relay._update_diagnostics = MethodType(FactrAPI._update_diagnostics, relay)
+    payload = {"dfc_raw_offsets_deg": [1.0, 2.0], "enable_samples": []}
+
+    relay._update_diagnostics(SimpleNamespace(data=json.dumps(payload)))
+
+    assert relay.diagnostics == payload
+    assert relay.diagnostics_version == 1
+    assert relay.rerun.diagnostics == [("left", payload)]
+
+
+def test_gain_feeds_status_cache_and_rerun():
+    relay = _relay()
+    relay.rerun = FakeRerun()
+    relay.force_gain = 0.0
+    relay._update_gain_state = MethodType(FactrAPI._update_gain_state, relay)
+
+    relay._update_gain_state(SimpleNamespace(data=0.75))
+
+    assert relay.force_gain == 0.75
+    assert relay.rerun.gains == [("left", 0.75)]
