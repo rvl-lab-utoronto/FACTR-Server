@@ -3,7 +3,7 @@
 <package format="3">
   <name>factr_fastapi</name>
   <version>0.0.0</version>
-  <description>FastAPI wrapper for ROS2</description>
+  <description>WebSocket and HTTP-control bridge for FACTR ROS2 topics</description>
   <maintainer email="leowang657@gmail.com">Leo Wang</maintainer>
   <license>Apache-2.0</license>
 

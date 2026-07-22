@@ -59,7 +59,7 @@
         "panel": "dedicated",
         "clear": true
       },
-      "detail": "Single FastAPI process serving BOTH arms on two ports: GET :5000/get_joint_positions_left  (<- /joint_pos_left) and GET :5001/get_joint_positions_right (<- /joint_pos_right). Does NOT touch the servos -- no arm posing needed, no torque; it just relays whatever the teleop nodes publish (serves the DoF+1 placeholder until a publisher connects). Frees ports 5000 and 5001 first. Run this alongside whichever teleop task(s) you want. Uses /usr/bin/python3 (3.10) since conda 3.13 can't load rclpy."
+      "detail": "Single relay process serving BOTH arms on two typed WebSockets: ws://localhost:5000/ws/left and ws://localhost:5001/ws/right. Each carries readings and diagnostics; HTTP is retained only for gravity-comp commands/status. Does NOT touch the servos -- no arm posing needed, no torque; it just relays whatever the teleop nodes publish (serves the DoF+1 placeholder until a publisher connects). Frees ports 5000 and 5001 first. Run this alongside whichever teleop task(s) you want. Uses /usr/bin/python3 (3.10) since conda 3.13 can't load rclpy."
     },
     {
       "label": "FACTR: Tail health log LEFT",
