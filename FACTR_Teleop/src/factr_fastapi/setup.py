@@ -15,7 +15,7 @@ setup(
     zip_safe=True,
     maintainer='leo_wang',
     maintainer_email='leowang657@gmail.com',
-    description='WebSocket and HTTP-control bridge for FACTR ROS2 topics',
+    description='FastAPI wrapper for ROS2',
     license='Apache-2.0',
     extras_require={
         'test': [
@@ -25,7 +25,6 @@ setup(
     entry_points={
         'console_scripts': [
             'factr_api = factr_fastapi.factr_api:main',
-            # Backward-compatible alias; both commands launch the integrated relay.
             'factr_websocket = factr_fastapi.factr_websocket:main'
         ],
     },
