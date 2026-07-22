@@ -6,7 +6,19 @@
 
 This project allows users to read the joint positions of two FACTR-inspired arms simultaneously (the new design can be found in the Hardware section). The code publishes real-time data to the ROS2 topics `/joint_pos_left` and `/joint_pos_right`.
 
-Users can also enable local HTTP GET endpoints using FastAPI on port 5000, providing a network interface for non-ROS2 projects to access and read the joint positions (refer to the FACTR Teleop section).
+The relay exposes typed WebSocket streams for non-ROS2 clients: left at
+`ws://localhost:5000/ws/left` and right at `ws://localhost:5001/ws/right`.
+Each connection carries both live joint readings and diagnostics. Gravity-comp
+commands and status remain small HTTP request/response routes on the same ports.
+
+The first frame is always diagnostics (with `available: false` while the teleop
+is starting). Readings then stream at 200 Hz, and a fresh diagnostics frame is
+sent whenever ROS publishes a new snapshot:
+
+```json
+{"type":"diagnostics","side":"left","available":true,"dfc_raw_offsets_deg":[...]}
+{"type":"reading","side":"left","joint_pos":[...]}
+```
 <br>
 
 ## Catalog
@@ -22,7 +34,7 @@ Users can also enable local HTTP GET endpoints using FastAPI on port 5000, provi
 ```mermaid
 graph LR
     %% Nodes definition
-    subgraph F [FastAPI]
+    subgraph F [WebSocket / control relay]
         subgraph B [Factr Firmware]
             A[Factr]
         end
@@ -44,7 +56,7 @@ graph LR
 There are five ROS 2 packages in this repository:
 
 - `factr_teleop` communication with the Dynamixel servos
-- `factr_fastapi` FastAPI endpoints
+- `factr_fastapi` WebSocket streams and HTTP control routes
 - `bc`
 - `cameras`
 - `python_utils`
@@ -140,11 +152,12 @@ Make sure that your U2D2 Power Hub Board is connected to your computer. Then, na
 
    4, run `ros2 run factr_teleop factr_rizon_testing`
 
-   In the meantime, if you want to publish the joint positions to `https://localhost:5000:`
+   To publish joint positions and diagnostics over WebSocket:
 
    5, start a new terminal and run `source install/setup.bash`
 
-   6, run `poetry run python -m src.factr_fastapi.factr_fastapi.factr_api`
+   6, run `poetry run python -m src.factr_fastapi.factr_fastapi.factr_api`, then
+   connect to `ws://localhost:5000/ws/left` or `ws://localhost:5001/ws/right`.
 
 Fix: the current gravity compensation model does not assume a uniform mass distribution.
 

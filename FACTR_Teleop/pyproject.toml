@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "factr_fastapi"
 version = "0.2.0"
-description = "FastAPI wrapper for FACTR's ROS2 setup"
+description = "WebSocket and HTTP-control bridge for FACTR's ROS2 setup"
 authors = ["Leo Wang <leowang657@gmail.com>"]
 
 packages = [

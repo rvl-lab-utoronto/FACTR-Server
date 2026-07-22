@@ -1,18 +1,14 @@
-# Arm-parameterized FACTR FastAPI server.
+# Arm-parameterized FACTR WebSocket/control server.
 #
-# ONE server instance per leader arm: single-arm control, single endpoint, one
-# port — matching the teleop node's per-arm design (factr_teleop arm_index 0/1).
-# Launch it twice, once per leader:
-#
-#   ros2 run factr_fastapi factr_api --ros-args -p arm_index:=0   # left
-#   ros2 run factr_fastapi factr_api --ros-args -p arm_index:=1   # right
+# One process hosts one server instance per leader arm: side-specific state and
+# routes on separate ports, matching the teleop nodes' per-arm design.
 #
 # arm_index selects everything for that instance:
-#   0 -> left  : GET :5000/get_joint_positions_left   <- ROS topic /joint_pos_left
-#   1 -> right : GET :5001/get_joint_positions_right  <- ROS topic /joint_pos_right
+#   0 -> left  : WS :5000/ws/left   <- ROS topics /joint_pos_left + /factr_diagnostics_left
+#   1 -> right : WS :5001/ws/right  <- ROS topics /joint_pos_right + /factr_diagnostics_right
 #
-# The route is registered dynamically in __init__ (NOT a class-body decorator),
-# so each process serves exactly its own side; the port is 5000 + arm_index.
+# Each route is registered dynamically in __init__ (not a class-body decorator);
+# the port is 5000 + arm_index.
 
 import asyncio
 import json
@@ -26,17 +22,14 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64, String
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 
 #: DoF+1 placeholder (7 arm joints + trailing gripper) served before a publisher connects.
 _DEFAULT_JOINT_POS = [0.0, 0.0, 0.0, 3.12, 0.0, 0.0, 0.0, 0.0]
 _BASE_PORT = 5000   # left = 5000 + 0, right = 5000 + 1
-
-
-class JointResponse(BaseModel):
-    joint_pos: list[float]
+_BROADCAST_HZ = 200.0
 
 
 class GravCompStatus(BaseModel):
@@ -84,39 +77,41 @@ def _side_for(arm_index: int) -> str:
 
 
 class FactrAPI(Node):
-    """One leader arm's ROS<->HTTP bridge.
+    """One leader arm's ROS<->WebSocket bridge plus HTTP control surface.
 
-    Reads ``/joint_pos_{side}`` and serves the latest positions at
-    ``GET /get_joint_positions_{side}``; the ``POST /enable_grav_comp_{side}`` and
-    ``POST /disable_grav_comp_{side}`` triggers republish a master output-gain target
-    (1.0 / 0.0) on ``/factr_gain_{side}`` for the teleop to ramp to; and
-    ``GET /status_{side}`` reports the teleop's LIVE master gain (read back from
-    ``/factr_gain_state_{side}``) so the dashboard can gate collection behind grav comp.
-    Everything (side, port, topics, routes) is derived from the
-    ``arm_index`` ROS parameter, so the same executable is launched once per leader arm.
+    ``WS /ws/{side}`` continuously emits typed JSON frames for both the latest
+    ``/joint_pos_{side}`` reading and the latest ``/factr_diagnostics_{side}``
+    snapshot. The bodyless ``POST /enable_grav_comp_{side}`` and
+    ``POST /disable_grav_comp_{side}`` triggers remain HTTP commands, and
+    ``GET /status_{side}`` remains an on-demand HTTP status query. Everything
+    (side, port, topics, routes) is derived from ``arm_index``.
     """
 
     def __init__(self, app: FastAPI, arm_index: int):
         super().__init__(f"factr_api_{arm_index}")
-        arm_index = self.declare_parameter("arm_index", arm_index).get_parameter_value().integer_value
+        arm_index = (
+            self.declare_parameter("arm_index", arm_index)
+            .get_parameter_value()
+            .integer_value
+        )
 
         self.side = _side_for(arm_index)
         self.port = _BASE_PORT + arm_index
         self.topic = f"/joint_pos_{self.side}"
-        self.route = f"/get_joint_positions_{self.side}"
+        self.stream_route = f"/ws/{self.side}"
         self.gain_topic = f"/factr_gain_{self.side}"
         self.gain_state_topic = f"/factr_gain_state_{self.side}"
         self.enable_route = f"/enable_grav_comp_{self.side}"
         self.disable_route = f"/disable_grav_comp_{self.side}"
         self.status_route = f"/status_{self.side}"
         self.diagnostics_topic = f"/factr_diagnostics_{self.side}"
-        self.diagnostics_route = f"/diagnostics_{self.side}"
 
         self.joint_pos: list[float] = list(_DEFAULT_JOINT_POS)
         #: Last target this relay commanded, and the live gain the teleop reports back.
         self.gain_target: float = 0.0
         self.force_gain: float = 0.0
         self.diagnostics: dict = {}
+        self.diagnostics_version = 0
         self.lock = threading.Lock()
 
         self.create_subscription(JointState, self.topic, self._update_joint_pos, 10)
@@ -126,39 +121,68 @@ class FactrAPI(Node):
         # Setpoint out to the teleop: the master output-gain target it ramps toward.
         self.gain_pub = self.create_publisher(Float64, self.gain_topic, 10)
 
-        # Per-side routes: read positions (GET), gain status (GET), enable/disable triggers
-        # (POST). The enable/disable calls take no body -- they kick off the teleop's ramp.
-        app.add_api_route(
-            self.route, self.get_joint_positions, methods=["GET"], response_model=JointResponse
-        )
+        # One push stream replaces the former reading and diagnostics GET routes.
+        # Gain status and the enable/disable commands remain request/response HTTP.
+        app.add_api_websocket_route(self.stream_route, self.stream)
         app.add_api_route(
             self.status_route, self.get_status, methods=["GET"], response_model=FactrStatus
         )
         app.add_api_route(
-            self.diagnostics_route, self.get_diagnostics, methods=["GET"],
-            response_model=DiagnosticsStatus,
+            self.enable_route,
+            self.enable_grav_comp,
+            methods=["POST"],
+            response_model=GravCompStatus,
         )
         app.add_api_route(
-            self.enable_route, self.enable_grav_comp, methods=["POST"], response_model=GravCompStatus
-        )
-        app.add_api_route(
-            self.disable_route, self.disable_grav_comp, methods=["POST"], response_model=GravCompStatus
-        )
-        self.get_logger().info(
-            f"FACTR API [{self.side}]: GET :{self.port}{self.route}  <-  {self.topic}"
+            self.disable_route,
+            self.disable_grav_comp,
+            methods=["POST"],
+            response_model=GravCompStatus,
         )
         self.get_logger().info(
-            f"FACTR API [{self.side}]: GET :{self.port}{self.status_route}  <-  {self.gain_state_topic}"
+            f"FACTR API [{self.side}]: WS :{self.port}{self.stream_route}  <-  "
+            f"{self.topic} + {self.diagnostics_topic}"
+        )
+        self.get_logger().info(
+            f"FACTR API [{self.side}]: GET :{self.port}{self.status_route}  <-  "
+            f"{self.gain_state_topic}"
         )
         self.get_logger().info(
             f"FACTR API [{self.side}]: POST :{self.port}{self.enable_route} / "
             f"{self.disable_route}  ->  {self.gain_topic}"
         )
 
-    async def get_joint_positions(self) -> JointResponse:
-        """Return this leader's most recent joint positions (7 arm joints + gripper)."""
-        with self.lock:
-            return JointResponse(joint_pos=list(self.joint_pos))
+    async def stream(self, websocket: WebSocket) -> None:
+        """Push readings at 200 Hz and each new diagnostics snapshot to one client.
+
+        Diagnostics is always the first frame on a new connection, including an
+        ``available=false`` placeholder while the teleop is still starting. Frames
+        are tagged with ``type`` so clients can update the two caches independently.
+        """
+        await websocket.accept()
+        last_diagnostics_version = -1
+        period_s = 1.0 / _BROADCAST_HZ
+        try:
+            while True:
+                with self.lock:
+                    joint_pos = list(self.joint_pos)
+                    diagnostics = dict(self.diagnostics)
+                    diagnostics_version = self.diagnostics_version
+
+                if diagnostics_version != last_diagnostics_version:
+                    payload = self._diagnostics_payload(diagnostics)
+                    await websocket.send_json({"type": "diagnostics", **payload})
+                    last_diagnostics_version = diagnostics_version
+
+                await websocket.send_json({
+                    "type": "reading",
+                    "side": self.side,
+                    "joint_pos": joint_pos,
+                })
+                await asyncio.sleep(period_s)
+        except (WebSocketDisconnect, OSError, RuntimeError):
+            # A push-only channel notices disconnects on the next send.
+            return
 
     async def get_status(self) -> FactrStatus:
         """Return this leader's live master gain(s): actual, commanded target, and enabled."""
@@ -172,15 +196,14 @@ class FactrAPI(Node):
             grav_comp_enabled=force_gain >= 0.99,
         )
 
-    async def get_diagnostics(self) -> DiagnosticsStatus:
-        """Return FACTR's immutable startup-calibration snapshot."""
-        with self.lock:
-            payload = dict(self.diagnostics)
+    def _diagnostics_payload(self, payload: dict) -> dict:
+        """Validate and normalize a diagnostics snapshot for the wire."""
         if not payload:
-            return DiagnosticsStatus(available=False, side=self.side)
+            status = DiagnosticsStatus(available=False, side=self.side)
+            return status.model_dump()
         payload.pop("captured_monotonic_ns", None)
         payload.update(available=True, side=self.side)
-        return DiagnosticsStatus(**payload)
+        return DiagnosticsStatus(**payload).model_dump()
 
     async def enable_grav_comp(self) -> GravCompStatus:
         """Trigger the teleop's ramp-up routine: applied torque fades 0->full over ~1s."""
@@ -216,6 +239,7 @@ class FactrAPI(Node):
         if isinstance(payload, dict):
             with self.lock:
                 self.diagnostics = payload
+                self.diagnostics_version += 1
 
 
 def _ros_spin(node: Node) -> None:
@@ -252,10 +276,10 @@ def main(args=None):
 
     # One FastAPI app + ROS node per arm, each bound to its own port (left 5000,
     # right 5001), so this single process serves BOTH arms. Each arm keeps its own
-    # config/topic/route; only its route is registered on its app.
+    # topics and WebSocket route; HTTP remains only for control/status calls.
     app_left, app_right = FastAPI(), FastAPI()
-    node_left = FactrAPI(app_left, 0)    # GET :5000/get_joint_positions_left  <- /joint_pos_left
-    node_right = FactrAPI(app_right, 1)  # GET :5001/get_joint_positions_right <- /joint_pos_right
+    node_left = FactrAPI(app_left, 0)    # WS :5000/ws/left  <- left ROS topics
+    node_right = FactrAPI(app_right, 1)  # WS :5001/ws/right <- right ROS topics
 
     # Keep the thread handles: the finally must join them so ROS teardown finishes
     # before the interpreter exits (see _ros_spin).
