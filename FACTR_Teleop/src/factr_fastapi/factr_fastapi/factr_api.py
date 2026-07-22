@@ -29,6 +29,10 @@ import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
 
+# Relative import so the publisher loads from THIS src tree when launched as
+# `-m src.factr_fastapi.factr_fastapi.factr_api` (see factr_teleop's READMEs).
+from . import factr_rerun
+
 
 #: DoF+1 placeholder (7 arm joints + trailing gripper) served before a publisher connects.
 _DEFAULT_JOINT_POS = [0.0, 0.0, 0.0, 3.12, 0.0, 0.0, 0.0, 0.0]
@@ -59,24 +63,25 @@ class FactrStatus(BaseModel):
     grav_comp_enabled: bool
 
 
-class DiagnosticsStatus(BaseModel):
+#: The leader-owned raw-Dynamixel→DFC conversion contract (from the arm YAML,
+#: republished by the teleop once it has booted). This is the ONLY calibration
+#: payload DFC reads from this relay; the full diagnostics snapshot (raw/model
+#: poses, offsets, enable captures) goes straight to Rerun — see factr_rerun.
+_CALIBRATION_KEYS = (
+    "dfc_raw_offsets_deg", "dfc_sign_flip_joints", "dfc_wrap_deg",
+    "dfc_drop_trailing", "dfc_gripper_open", "dfc_gripper_closed",
+)
+
+
+class CalibrationStatus(BaseModel):
     available: bool
     side: str
-    raw_q_rad: list[float] = []
-    configured_home_q_rad: list[float] = []
-    joint_offsets_rad: list[float] = []
-    model_signs: list[float] = []
-    model_q_rad: list[float] = []
-    dfc_home_q_rad: list[float] = []
-    dfc_to_factr_signs: list[float] = []
-    dfc_to_factr_offset_rad: list[float] = []
     dfc_raw_offsets_deg: list[float] = []
     dfc_sign_flip_joints: list[int] = []
     dfc_wrap_deg: bool | None = None
     dfc_drop_trailing: int | None = None
     dfc_gripper_open: float | None = None
     dfc_gripper_closed: float | None = None
-    enable_samples: list[dict] = []
 
 
 def _side_for(arm_index: int) -> str:
@@ -110,7 +115,7 @@ class FactrAPI(Node):
         self.disable_route = f"/disable_grav_comp_{self.side}"
         self.status_route = f"/status_{self.side}"
         self.diagnostics_topic = f"/factr_diagnostics_{self.side}"
-        self.diagnostics_route = f"/diagnostics_{self.side}"
+        self.calibration_route = f"/calibration_{self.side}"
 
         self.joint_pos: list[float] = list(_DEFAULT_JOINT_POS)
         #: Last target this relay commanded, and the live gain the teleop reports back.
@@ -118,6 +123,9 @@ class FactrAPI(Node):
         self.force_gain: float = 0.0
         self.diagnostics: dict = {}
         self.lock = threading.Lock()
+        #: Shared per-process Rerun sink; both sides feed one recording. Never
+        #: raises — without rerun-sdk (or a reachable proxy) it self-disables.
+        self.rerun = factr_rerun.shared_publisher(self.get_logger())
 
         self.create_subscription(JointState, self.topic, self._update_joint_pos, 10)
         # The teleop reports its LIVE master gain here; served at GET /status_<side>.
@@ -135,8 +143,8 @@ class FactrAPI(Node):
             self.status_route, self.get_status, methods=["GET"], response_model=FactrStatus
         )
         app.add_api_route(
-            self.diagnostics_route, self.get_diagnostics, methods=["GET"],
-            response_model=DiagnosticsStatus,
+            self.calibration_route, self.get_calibration, methods=["GET"],
+            response_model=CalibrationStatus,
         )
         app.add_api_route(
             self.enable_route, self.enable_grav_comp, methods=["POST"], response_model=GravCompStatus
@@ -172,15 +180,16 @@ class FactrAPI(Node):
             grav_comp_enabled=force_gain >= 0.99,
         )
 
-    async def get_diagnostics(self) -> DiagnosticsStatus:
-        """Return FACTR's immutable startup-calibration snapshot."""
+    async def get_calibration(self) -> CalibrationStatus:
+        """Return the leader-owned raw→DFC conversion contract (from the arm YAML)."""
         with self.lock:
             payload = dict(self.diagnostics)
         if not payload:
-            return DiagnosticsStatus(available=False, side=self.side)
-        payload.pop("captured_monotonic_ns", None)
-        payload.update(available=True, side=self.side)
-        return DiagnosticsStatus(**payload)
+            return CalibrationStatus(available=False, side=self.side)
+        fields = {
+            key: payload[key] for key in _CALIBRATION_KEYS if payload.get(key) is not None
+        }
+        return CalibrationStatus(available=True, side=self.side, **fields)
 
     async def enable_grav_comp(self) -> GravCompStatus:
         """Trigger the teleop's ramp-up routine: applied torque fades 0->full over ~1s."""
@@ -206,6 +215,7 @@ class FactrAPI(Node):
     def _update_gain_state(self, msg: Float64) -> None:
         with self.lock:
             self.force_gain = float(msg.data)
+        self.rerun.publish_gain(self.side, float(msg.data))
 
     def _update_diagnostics(self, msg: String) -> None:
         try:
@@ -216,6 +226,7 @@ class FactrAPI(Node):
         if isinstance(payload, dict):
             with self.lock:
                 self.diagnostics = payload
+            self.rerun.publish_diagnostics(self.side, payload)
 
 
 def _ros_spin(node: Node) -> None:
