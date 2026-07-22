@@ -29,6 +29,7 @@ from rclpy.node import Node
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from std_msgs.msg import Float64, String
 from python_utils.utils import get_workspace_root
+from .angles import periodic_joint_error
 from factr_teleop.dynamixel.driver import DynamixelDriver
 
 
@@ -724,7 +725,14 @@ class FACTRTeleop(Node, ABC):
         )
         J_dagger = np.linalg.pinv(J)
         null_space_projector = np.eye(self.num_arm_joints) - J_dagger @ J
-        q_error = arm_joint_pos - self.null_space_joint_target[0:self.num_arm_joints]
+        # Present Position can jump to an equivalent +/-2*pi encoder branch after
+        # a servo reboot.  The Jacobian and gravity model are periodic, but this
+        # linear PD error is not; without wrapping it generated ~0.6 Nm of false
+        # null-space torque on the right leader while the physical pose was valid.
+        q_error = periodic_joint_error(
+            arm_joint_pos,
+            self.null_space_joint_target[0:self.num_arm_joints],
+        )
         tau_n = null_space_projector @ (-self.null_space_kp*q_error-self.null_space_kd*arm_joint_vel)
         return tau_n
     
