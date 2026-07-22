@@ -19,6 +19,22 @@ sent whenever ROS publishes a new snapshot:
 {"type":"diagnostics","side":"left","available":true,"dfc_raw_offsets_deg":[...]}
 {"type":"reading","side":"left","joint_pos":[...]}
 ```
+
+The stream is duplex: clients push the follower's external joint torques back up
+the same connection for the leader's force feedback. Joint space today — `tau`
+holds one torque per arm joint [Nm] in the follower's joint convention; the
+`space` tag reserves room for a future task-space (TCP wrench) variant:
+
+```json
+{"type":"force_feedback","side":"left","space":"joint","tau":[...]}
+```
+
+The relay republishes each frame on `/factr_force_feedback_<side>`; the teleop
+applies it through its `torque_feedback` term (see `controller.torque_feedback`
+in the arm config: `enable`, `gain`, plus the `timeout` staleness cutoff and
+`max_torque` per-joint clip), feeding zeros once the feed goes stale so a dead
+client never leaves a standing force on the leader. For stream-less debugging,
+`POST /force_feedback_<side>` accepts the same `space`/`tau` payload.
 <br>
 
 ## Catalog

@@ -7,13 +7,20 @@
 #   0 -> left  : WS :5000/ws/left   <- ROS topics /joint_pos_left + /factr_diagnostics_left
 #   1 -> right : WS :5001/ws/right  <- ROS topics /joint_pos_right + /factr_diagnostics_right
 #
+# The WebSocket is duplex: inbound force_feedback frames (follower external joint
+# torques) are republished to the teleop on /factr_force_feedback_<side>, with a
+# POST /force_feedback_<side> fallback for stream-less debugging.
+#
 # Each route is registered dynamically in __init__ (not a class-body decorator);
 # the port is 5000 + arm_index.
 
 import asyncio
+import contextlib
 import json
+import math
 import signal
 import threading
+from typing import Literal
 
 import rclpy
 from rclpy.node import Node
@@ -23,7 +30,7 @@ from std_msgs.msg import Float64, String
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError, field_validator
 
 
 #: DoF+1 placeholder (7 arm joints + trailing gripper) served before a publisher connects.
@@ -50,6 +57,31 @@ class FactrStatus(BaseModel):
     force_gain: float
     force_gain_target: float
     grav_comp_enabled: bool
+
+
+class ForceFeedback(BaseModel):
+    #: Follower external joint torques for the leader's force feedback. Joint space is
+    #: the only supported space today: ``tau`` holds one torque per arm joint [Nm] in
+    #: the follower's joint convention. ``space`` is on the wire so a task-space
+    #: variant (a 6-D TCP wrench under ``space="tcp"``) can be added later without a
+    #: breaking payload change; until then anything but ``"joint"`` is rejected.
+    space: Literal["joint"] = "joint"
+    tau: list[float]
+
+    @field_validator("tau")
+    @classmethod
+    def _finite(cls, tau: list[float]) -> list[float]:
+        # Python's json module happily parses NaN/Infinity literals; a NaN torque
+        # must never reach the teleop's torque command.
+        if not tau or not all(math.isfinite(x) for x in tau):
+            raise ValueError("tau must be a non-empty list of finite numbers")
+        return tau
+
+
+class ForceFeedbackAck(BaseModel):
+    side: str
+    space: str
+    dof: int
 
 
 class DiagnosticsStatus(BaseModel):
@@ -81,7 +113,9 @@ class FactrAPI(Node):
 
     ``WS /ws/{side}`` continuously emits typed JSON frames for both the latest
     ``/joint_pos_{side}`` reading and the latest ``/factr_diagnostics_{side}``
-    snapshot. The bodyless ``POST /enable_grav_comp_{side}`` and
+    snapshot, and accepts inbound ``force_feedback`` frames that it republishes on
+    ``/factr_force_feedback_{side}`` (``POST /force_feedback_{side}`` is the
+    stream-less fallback). The bodyless ``POST /enable_grav_comp_{side}`` and
     ``POST /disable_grav_comp_{side}`` triggers remain HTTP commands, and
     ``GET /status_{side}`` remains an on-demand HTTP status query. Everything
     (side, port, topics, routes) is derived from ``arm_index``.
@@ -105,6 +139,8 @@ class FactrAPI(Node):
         self.disable_route = f"/disable_grav_comp_{self.side}"
         self.status_route = f"/status_{self.side}"
         self.diagnostics_topic = f"/factr_diagnostics_{self.side}"
+        self.force_feedback_topic = f"/factr_force_feedback_{self.side}"
+        self.force_feedback_route = f"/force_feedback_{self.side}"
 
         self.joint_pos: list[float] = list(_DEFAULT_JOINT_POS)
         #: Last target this relay commanded, and the live gain the teleop reports back.
@@ -120,6 +156,11 @@ class FactrAPI(Node):
         self.create_subscription(String, self.diagnostics_topic, self._update_diagnostics, 10)
         # Setpoint out to the teleop: the master output-gain target it ramps toward.
         self.gain_pub = self.create_publisher(Float64, self.gain_topic, 10)
+        # Follower external joint torques in to the teleop's force-feedback term
+        # (JointState.effort, one torque per arm joint).
+        self.force_feedback_pub = self.create_publisher(
+            JointState, self.force_feedback_topic, 10
+        )
 
         # One push stream replaces the former reading and diagnostics GET routes.
         # Gain status and the enable/disable commands remain request/response HTTP.
@@ -139,9 +180,19 @@ class FactrAPI(Node):
             methods=["POST"],
             response_model=GravCompStatus,
         )
+        app.add_api_route(
+            self.force_feedback_route,
+            self.post_force_feedback,
+            methods=["POST"],
+            response_model=ForceFeedbackAck,
+        )
         self.get_logger().info(
             f"FACTR API [{self.side}]: WS :{self.port}{self.stream_route}  <-  "
             f"{self.topic} + {self.diagnostics_topic}"
+        )
+        self.get_logger().info(
+            f"FACTR API [{self.side}]: WS force_feedback frames / POST "
+            f":{self.port}{self.force_feedback_route}  ->  {self.force_feedback_topic}"
         )
         self.get_logger().info(
             f"FACTR API [{self.side}]: GET :{self.port}{self.status_route}  <-  "
@@ -153,13 +204,32 @@ class FactrAPI(Node):
         )
 
     async def stream(self, websocket: WebSocket) -> None:
-        """Push readings at 200 Hz and each new diagnostics snapshot to one client.
+        """Serve one client on a duplex WebSocket: push state out, take feedback in.
 
-        Diagnostics is always the first frame on a new connection, including an
-        ``available=false`` placeholder while the teleop is still starting. Frames
-        are tagged with ``type`` so clients can update the two caches independently.
+        Outbound (:meth:`_stream_sender`, a concurrent task): readings at 200 Hz and
+        each new diagnostics snapshot. Diagnostics is always the first frame on a new
+        connection, including an ``available=false`` placeholder while the teleop is
+        still starting. Frames are tagged with ``type`` so clients can update the two
+        caches independently.
+
+        Inbound (this coroutine): ``force_feedback`` frames, republished to the
+        teleop on ``/factr_force_feedback_<side>``. Malformed frames are logged and
+        dropped, never fatal to the stream.
         """
         await websocket.accept()
+        sender = asyncio.create_task(self._stream_sender(websocket))
+        try:
+            while True:
+                self._handle_inbound_frame(await websocket.receive_text())
+        except (WebSocketDisconnect, KeyError, OSError, RuntimeError):
+            # KeyError: a binary frame, which receive_text has no "text" key for.
+            pass
+        finally:
+            sender.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await sender
+
+    async def _stream_sender(self, websocket: WebSocket) -> None:
         last_diagnostics_version = -1
         period_s = 1.0 / _BROADCAST_HZ
         try:
@@ -181,8 +251,48 @@ class FactrAPI(Node):
                 })
                 await asyncio.sleep(period_s)
         except (WebSocketDisconnect, OSError, RuntimeError):
-            # A push-only channel notices disconnects on the next send.
+            # The push direction notices disconnects on the next send.
             return
+
+    def _handle_inbound_frame(self, message: str) -> None:
+        """Validate one client->server frame and republish it to the teleop."""
+        try:
+            payload = json.loads(message)
+            if not isinstance(payload, dict):
+                raise ValueError("frame is not a JSON object")
+            frame_side = payload.get("side")
+            if frame_side is not None and frame_side != self.side:
+                raise ValueError(f"frame is for side {frame_side!r}")
+            frame_type = payload.get("type")
+            if frame_type != "force_feedback":
+                raise ValueError(f"unknown inbound frame type {frame_type!r}")
+            feedback = ForceFeedback(
+                **{k: v for k, v in payload.items() if k in ("space", "tau")}
+            )
+        except (ValueError, ValidationError) as exc:
+            self.get_logger().warning(
+                f"FACTR API [{self.side}]: dropped inbound WS frame: {exc}",
+                throttle_duration_sec=1.0,
+            )
+            return
+        self._publish_force_feedback(feedback)
+
+    async def post_force_feedback(self, feedback: ForceFeedback) -> ForceFeedbackAck:
+        """HTTP fallback for one force-feedback sample (debugging, curl).
+
+        The steady-state path is the WebSocket frame; this route exists so the
+        feedback pipeline can be exercised without a stream client.
+        """
+        self._publish_force_feedback(feedback)
+        return ForceFeedbackAck(
+            side=self.side, space=feedback.space, dof=len(feedback.tau)
+        )
+
+    def _publish_force_feedback(self, feedback: ForceFeedback) -> None:
+        msg = JointState()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.effort = [float(x) for x in feedback.tau]
+        self.force_feedback_pub.publish(msg)
 
     async def get_status(self) -> FactrStatus:
         """Return this leader's live master gain(s): actual, commanded target, and enabled."""

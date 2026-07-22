@@ -55,6 +55,12 @@ controller:
     gain: 3.0
     damping: 0.0
     motor_scalar: 94.5652173913
+    # Staleness cutoff [s] and per-joint clip [Nm] for the follower external-torque
+    # feed (/factr_force_feedback_<side>): the control loop feeds zeros once the
+    # newest sample is older than `timeout`, and each accepted torque is clipped to
+    # +-max_torque before use.
+    timeout: 0.25
+    max_torque: 10.0
   # Seconds for the master output gain to ramp 0->1 when grav comp is enabled from the
   # dashboard (rate = 1/force_gain_ramp_time per second; scales every force term at once).
   force_gain_ramp_time: 1.0

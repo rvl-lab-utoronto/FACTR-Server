@@ -113,9 +113,6 @@ class FactrRizonTeleop(FACTRTeleop):
     def gripper_feedback(self, leader_gripper_pos, leader_gripper_vel, gripper_feedback):
         pass
     
-    def get_leader_arm_external_joint_torque(self):
-        pass
-
     def update_communication(self, leader_arm_pos, leader_gripper_pos):
         # use publish_joint_pos() instead
         pass

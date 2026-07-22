@@ -6,6 +6,7 @@ The class FACTRTeleopDualBase is intended for controlling the Dynamixel servos w
 
 import json
 import os
+import threading
 import time
 import yaml
 import subprocess
@@ -15,6 +16,7 @@ from abc import ABC, abstractmethod
 
 from rclpy.node import Node
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64, String
 from python_utils.utils import get_workspace_root
 from .angles import periodic_joint_error
@@ -143,6 +145,11 @@ class FACTRTeleopDualBase(Node, ABC):
         self.torque_feedback_gain = self.config["controller"]["torque_feedback"]["gain"]
         self.torque_feedback_motor_scalar = self.config["controller"]["torque_feedback"]["motor_scalar"]
         self.torque_feedback_damping = self.config["controller"]["torque_feedback"]["damping"]
+        # Staleness cutoff and per-joint clip for the follower external-torque feed
+        # (see the /factr_force_feedback_<side> subscription below). Optional keys so
+        # configs that predate force feedback keep launching.
+        self.torque_feedback_timeout = self.config["controller"]["torque_feedback"].get("timeout", 0.25)
+        self.torque_feedback_max = self.config["controller"]["torque_feedback"].get("max_torque", 10.0)
         # gripper feedback
         self.enable_gripper_feedback = self.config["controller"]["gripper_feedback"]["enable"]
         
@@ -169,6 +176,23 @@ class FACTRTeleopDualBase(Node, ABC):
         self._calibration_snapshot = {}
         self._diagnostics_pub = self.create_publisher(String, f"/factr_diagnostics_{side}", 10)
         self.create_timer(0.5, self._publish_diagnostics, callback_group=self._gain_cb_group)
+
+        # Follower external joint torques for the force-feedback term, pushed by the
+        # DFC client through the FACTR API relay (WS force_feedback frames or
+        # POST /force_feedback_<side> -> /factr_force_feedback_<side>). Joint-space:
+        # JointState.effort holds one torque per arm joint in the follower's joint
+        # convention — the same convention every torque this loop composes; a future
+        # task-space variant would carry a 6-D TCP wrench and map it through the
+        # leader Jacobian instead. Latest-value cache with a staleness cutoff so a
+        # dropped client or dead relay never leaves a standing force on the leader.
+        self._external_torque = np.zeros(self.num_arm_joints)
+        self._external_torque_at = 0.0   # monotonic receive time; 0.0 = never
+        self._external_torque_lock = threading.Lock()
+        self._force_feedback_cb_group = MutuallyExclusiveCallbackGroup()
+        self.create_subscription(
+            JointState, f"/factr_force_feedback_{side}", self._on_force_feedback, 10,
+            callback_group=self._force_feedback_cb_group,
+        )
 
         # FACTR owns gravity-model calibration, using its configured physical home pose.
         self._get_dynamixel_offsets()
@@ -682,6 +706,26 @@ this is not what I want to
         tau_l_gripper = 0.0
         return tau_l, tau_l_gripper
 
+    def _on_force_feedback(self, msg):
+        """Cache one follower external-torque sample (``JointState.effort``, arm joints).
+
+        Wrong-length or non-finite samples are dropped with a throttled warning;
+        accepted torques are clipped to ±torque_feedback.max_torque per joint before
+        the control loop can see them.
+        """
+        tau = np.asarray(msg.effort, dtype=float)
+        if tau.shape != (self.num_arm_joints,) or not np.all(np.isfinite(tau)):
+            self.get_logger().warning(
+                f"FACTR TELEOP {self.name}: dropped force-feedback sample "
+                f"(shape {tau.shape}, want ({self.num_arm_joints},), finite only)",
+                throttle_duration_sec=1.0,
+            )
+            return
+        np.clip(tau, -self.torque_feedback_max, self.torque_feedback_max, out=tau)
+        with self._external_torque_lock:
+            self._external_torque = tau
+            self._external_torque_at = time.monotonic()
+
     def _on_force_gain_target(self, msg):
         """Set the master output-gain target (clamped to [0, 1]); the loop ramps to it."""
         new_target = float(np.clip(msg.data, 0.0, 1.0))
@@ -972,21 +1016,29 @@ this is not what I want to
         pass
 
 
-    @abstractmethod
     def get_leader_arm_external_joint_torque(self):
         """
-        This method should retrieve the current external joint torque from the follower arm.
-        This is used to compute force-feedback in the leader arm. This method is called at
-        every iteration of the control loop if self.enable_torque_feedback is set to True.
+        Returns the current external joint torque of the follower arm, used to compute
+        force-feedback in the leader arm. Called at every iteration of the control loop
+        if self.enable_torque_feedback is set to True.
+
+        The base implementation reads the latest sample cached from the
+        /factr_force_feedback_<side> subscription (follower torques pushed by the DFC
+        client through the FACTR API relay) and returns zeros once that feed is older
+        than torque_feedback.timeout, so feedback dies with the connection instead of
+        freezing at the last value. Subclasses with their own follower link may
+        still override this.
 
         Returns:
-            np.ndarray: A NumPy array of shape (num_arm_joints,) containing the external 
-            joint torques. 
-
-        Raises:
-            NotImplementedError: If the method is not implemented in a subclass.
+            np.ndarray: A NumPy array of shape (num_arm_joints,) containing the external
+            joint torques.
         """
-        pass
+        with self._external_torque_lock:
+            tau = self._external_torque
+            received_at = self._external_torque_at
+        if time.monotonic() - received_at > self.torque_feedback_timeout:
+            return np.zeros(self.num_arm_joints)
+        return tau
 
 
     @abstractmethod

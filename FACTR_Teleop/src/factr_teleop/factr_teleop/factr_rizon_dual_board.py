@@ -80,11 +80,10 @@ class FactrRizonTeleopDualBoard(FACTRTeleopDualBase):
             torque_friction = self.friction_compensation(leader_arm_vel)
         torque_arm = torque_l + torque_null + torque_gravity + torque_friction
         
-        # if self.enable_torque_feedback:
-        #     print(self.get_leader_arm_external_joint_torque())
-        #     external_joint_torque = self.get_leader_arm_external_joint_torque()
-        #     torque_arm += self.torque_feedback(external_joint_torque, leader_arm_vel)
-        
+        if self.enable_torque_feedback:
+            external_joint_torque = self.get_leader_arm_external_joint_torque()
+            torque_arm += self.torque_feedback(external_joint_torque, leader_arm_vel)
+
         # if self.enable_gripper_feedback:
         #     gripper_feedback = self.get_leader_gripper_feedback()
         #     torque_gripper += self.gripper_feedback(leader_gripper_pos, leader_gripper_vel, gripper_feedback)
@@ -141,9 +140,6 @@ class FactrRizonTeleopDualBoard(FACTRTeleopDualBase):
         pass
 
     def gripper_feedback(self, leader_gripper_pos, leader_gripper_vel, gripper_feedback):
-        pass
-
-    def get_leader_arm_external_joint_torque(self):
         pass
 
     def update_communication(self, leader_arm_pos, leader_gripper_pos):
