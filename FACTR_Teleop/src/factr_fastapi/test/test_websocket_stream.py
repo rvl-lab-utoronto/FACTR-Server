@@ -53,9 +53,13 @@ class FakePublisher:
 class FakeLogger:
     def __init__(self):
         self.warnings = []
+        self.infos = []
 
     def warning(self, msg, **kwargs):
         self.warnings.append(msg)
+
+    def info(self, msg, **kwargs):
+        self.infos.append(msg)
 
 
 class FakeRerun:
@@ -77,6 +81,7 @@ def _relay(side="left"):
         joint_pos=[0.0, 1.0, 2.0],
         diagnostics={},
         diagnostics_version=0,
+        force_feedback_enabled=True,
         force_feedback_pub=FakePublisher(),
     )
     for name in (
@@ -86,6 +91,8 @@ def _relay(side="left"):
         "_diagnostics_payload",
         "_publish_force_feedback",
         "post_force_feedback",
+        "enable_force_feedback",
+        "disable_force_feedback",
     ):
         setattr(relay, name, MethodType(getattr(FactrAPI, name), relay))
     logger = FakeLogger()
@@ -160,6 +167,25 @@ def test_post_force_feedback_publishes_and_acks():
     assert ack.space == "joint"
     assert ack.dof == 3
     assert [list(m.effort) for m in relay.force_feedback_pub.msgs] == [[0.0, 1.0, -2.0]]
+
+
+def test_force_feedback_toggle_gates_samples_and_disable_publishes_zero():
+    relay = _relay()
+    relay.force_feedback_enabled = False
+    frame = json.dumps({"type": "force_feedback", "tau": [1.0, 2.0]})
+
+    relay._handle_inbound_frame(frame)
+    assert relay.force_feedback_pub.msgs == []
+
+    enabled = asyncio.run(relay.enable_force_feedback())
+    relay._handle_inbound_frame(frame)
+    assert enabled.force_feedback_enabled is True
+    assert [list(m.effort) for m in relay.force_feedback_pub.msgs] == [[1.0, 2.0]]
+
+    disabled = asyncio.run(relay.disable_force_feedback())
+    assert disabled.force_feedback_enabled is False
+    assert relay.force_feedback_enabled is False
+    assert list(relay.force_feedback_pub.msgs[-1].effort) == [0.0, 0.0]
 
 
 def test_diagnostics_feed_both_websocket_cache_and_rerun():

@@ -51,7 +51,9 @@ controller:
   # cheap (a few ms/sample, not the ~30 ms of the old per-servo reads). 0 disables.
   health_log_period: 0.1
   torque_feedback:
-    enable: False
+    # Capability is on for both leaders; the API relay's runtime gate defaults
+    # off and is controlled by /enable_force_feedback_left.
+    enable: True
     gain: 3.0
     damping: 0.0
     motor_scalar: 94.5652173913

@@ -61,6 +61,7 @@ class FactrStatus(BaseModel):
     force_gain: float
     force_gain_target: float
     grav_comp_enabled: bool
+    force_feedback_enabled: bool
 
 
 class ForceFeedback(BaseModel):
@@ -86,6 +87,11 @@ class ForceFeedbackAck(BaseModel):
     side: str
     space: str
     dof: int
+
+
+class ForceFeedbackToggleStatus(BaseModel):
+    side: str
+    force_feedback_enabled: bool
 
 
 class DiagnosticsStatus(BaseModel):
@@ -144,11 +150,16 @@ class FactrAPI(Node):
         self.diagnostics_topic = f"/factr_diagnostics_{self.side}"
         self.force_feedback_topic = f"/factr_force_feedback_{self.side}"
         self.force_feedback_route = f"/force_feedback_{self.side}"
+        self.enable_force_feedback_route = f"/enable_force_feedback_{self.side}"
+        self.disable_force_feedback_route = f"/disable_force_feedback_{self.side}"
 
         self.joint_pos: list[float] = list(_DEFAULT_JOINT_POS)
         #: Last target this relay commanded, and the live gain the teleop reports back.
         self.gain_target: float = 0.0
         self.force_gain: float = 0.0
+        # Follower torques are opt-in. Disabling also publishes one zero sample;
+        # the teleop's own staleness gate remains the final fail-safe.
+        self.force_feedback_enabled = False
         self.diagnostics: dict = {}
         self.diagnostics_version = 0
         self.lock = threading.Lock()
@@ -192,6 +203,18 @@ class FactrAPI(Node):
             methods=["POST"],
             response_model=ForceFeedbackAck,
         )
+        app.add_api_route(
+            self.enable_force_feedback_route,
+            self.enable_force_feedback,
+            methods=["POST"],
+            response_model=ForceFeedbackToggleStatus,
+        )
+        app.add_api_route(
+            self.disable_force_feedback_route,
+            self.disable_force_feedback,
+            methods=["POST"],
+            response_model=ForceFeedbackToggleStatus,
+        )
         self.get_logger().info(
             f"FACTR API [{self.side}]: WS :{self.port}{self.stream_route}  <-  "
             f"{self.topic} + {self.diagnostics_topic}"
@@ -199,6 +222,10 @@ class FactrAPI(Node):
         self.get_logger().info(
             f"FACTR API [{self.side}]: WS force_feedback frames / POST "
             f":{self.port}{self.force_feedback_route}  ->  {self.force_feedback_topic}"
+        )
+        self.get_logger().info(
+            f"FACTR API [{self.side}]: POST :{self.port}"
+            f"{self.enable_force_feedback_route} / {self.disable_force_feedback_route}"
         )
         self.get_logger().info(
             f"FACTR API [{self.side}]: GET :{self.port}{self.status_route}  <-  "
@@ -298,18 +325,45 @@ class FactrAPI(Node):
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.effort = [float(x) for x in feedback.tau]
-        self.force_feedback_pub.publish(msg)
+        with self.lock:
+            if not self.force_feedback_enabled:
+                return
+            self.force_feedback_pub.publish(msg)
+
+    async def enable_force_feedback(self) -> ForceFeedbackToggleStatus:
+        """Allow follower-torque samples through to this leader."""
+        with self.lock:
+            self.force_feedback_enabled = True
+        self.get_logger().info(f"FACTR API [{self.side}]: force feedback enabled")
+        return ForceFeedbackToggleStatus(
+            side=self.side, force_feedback_enabled=True,
+        )
+
+    async def disable_force_feedback(self) -> ForceFeedbackToggleStatus:
+        """Block follower torques and immediately command a zero sample."""
+        msg = JointState()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        with self.lock:
+            self.force_feedback_enabled = False
+            msg.effort = [0.0] * max(0, len(self.joint_pos) - 1)
+            self.force_feedback_pub.publish(msg)
+        self.get_logger().info(f"FACTR API [{self.side}]: force feedback disabled")
+        return ForceFeedbackToggleStatus(
+            side=self.side, force_feedback_enabled=False,
+        )
 
     async def get_status(self) -> FactrStatus:
         """Return this leader's live master gain(s): actual, commanded target, and enabled."""
         with self.lock:
             force_gain = self.force_gain
             gain_target = self.gain_target
+            force_feedback_enabled = self.force_feedback_enabled
         return FactrStatus(
             side=self.side,
             force_gain=force_gain,
             force_gain_target=gain_target,
             grav_comp_enabled=force_gain >= 0.99,
+            force_feedback_enabled=force_feedback_enabled,
         )
 
     def _diagnostics_payload(self, payload: dict) -> dict:

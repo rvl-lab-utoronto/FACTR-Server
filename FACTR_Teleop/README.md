@@ -35,6 +35,12 @@ in the arm config: `enable`, `gain`, plus the `timeout` staleness cutoff and
 `max_torque` per-joint clip), feeding zeros once the feed goes stale so a dead
 client never leaves a standing force on the leader. For stream-less debugging,
 `POST /force_feedback_<side>` accepts the same `space`/`tau` payload.
+
+Force feedback is disabled by default. Bodyless
+`POST /enable_force_feedback_<side>` and
+`POST /disable_force_feedback_<side>` toggle the relay gate; disabling publishes
+an immediate zero-torque sample. `GET /status_<side>` reports the live switch as
+`force_feedback_enabled`.
 <br>
 
 ## Catalog
