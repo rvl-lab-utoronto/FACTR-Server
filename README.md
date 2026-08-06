@@ -13,13 +13,14 @@ There are three deliberately separate representations of a leader pose:
 - **FACTR model** is used only inside FACTR for gravity compensation and other leader-side
   dynamics. It follows the FACTR mechanism and URDF, not the Rizon joint convention.
 
-DFC's `conf/factr/*.yaml` is the single calibration source. Each `leaders.<side>`
-object stores the raw Dynamixel→DFC convention, canonical DFC home, and affine
-DFC→FACTR transform. The DFC supervisor injects that object into the managed teleop
-at launch; FACTR derives its dynamics-model signs and offsets and rejects a mismatch
-with the physical mechanism. FACTR's hardware YAML contains no calibration copy.
-DFC straight-up home is `[0,0,0,0,0,0,0]`; the corresponding FACTR model reference is
-`[0,0,0,pi/2,0,0,0]`. The explicit joint-4 offset is intentional.
+DFC's `conf/factr/*.yaml` is the measured-calibration source. Each `leaders.<side>`
+object stores the raw Dynamixel→DFC convention, canonical DFC home, and DFC→FACTR
+axis signs. The DFC supervisor injects that object into the managed teleop at launch.
+FACTR's hardware YAML owns the mechanism/URDF signs and the single authoritative
+`model_home_q_rad`; FACTR derives both the affine DFC→FACTR offset and its native
+Dynamixel model offsets at launch. No derived offset is persisted or accepted in the
+DFC contract. DFC straight-up home is `[0,0,0,0,0,0,0]`; the corresponding FACTR
+model reference is `[0,0,0,1.57,0,0,0]`.
 The leader may start in any pose. No launch-pose calibration occurs.
 
 ## Live telemetry

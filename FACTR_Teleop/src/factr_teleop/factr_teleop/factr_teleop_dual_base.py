@@ -99,15 +99,21 @@ class FACTRTeleopDualBase(Node, ABC):
         self.safety_margin = self.config["arm_teleop"]["arm_joint_limits_safety_margin"]
         self.arm_joint_limits_max = np.array(self.config["arm_teleop"]["arm_joint_limits_max"]) - self.safety_margin
         self.arm_joint_limits_min = np.array(self.config["arm_teleop"]["arm_joint_limits_min"]) + self.safety_margin
+        self.initial_match_joint_pos = np.array(
+            self.config["arm_teleop"]["initialization"]["model_home_q_rad"],
+            dtype=float,
+        )
         self._leader_model = load_leader_model(
-            self.side, self.num_arm_joints, self._model_joint_signs
+            self.side,
+            self.num_arm_joints,
+            self._model_joint_signs,
+            self.initial_match_joint_pos,
         )
         self.calibration_joint_pos = self._leader_model.home_factr_q_rad.copy()
-        self.initial_match_joint_pos = np.array(self.config["arm_teleop"]["initialization"]["initial_match_joint_pos"])
         assert self.num_arm_joints == len(self.arm_joint_limits_max) == len(self.arm_joint_limits_min), \
             "num_arm_joints and the length of arm joint limits must be the same"
         assert self.num_arm_joints == len(self.calibration_joint_pos) == len(self.initial_match_joint_pos), \
-            "num_arm_joints and the length of calibration_joint_pos and initial_match_joint_pos must be the same"
+            "num_arm_joints and the FACTR model-home vectors must have the same length"
         
         # leader gripper parameters
         self.gripper_limit_min = -10

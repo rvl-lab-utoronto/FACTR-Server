@@ -32,8 +32,14 @@ class LeaderModelConfig:
         return q_factr, dq_factr
 
 
-def load_leader_model(expected_side, dof, physical_model_signs, environ=None):
-    """Parse and validate DFC's contract, then derive FACTR model calibration."""
+def load_leader_model(
+    expected_side, dof, physical_model_signs, model_home_q_rad, environ=None
+):
+    """Parse DFC's measured contract and derive FACTR model calibration.
+
+    ``model_home_q_rad`` is owned by FACTR's mechanism configuration. The affine
+    DFC→FACTR offset is derived here and is never accepted as persisted input.
+    """
     environ = os.environ if environ is None else environ
     encoded = environ.get("DFC_LEADER_CONFIG")
     if not encoded:
@@ -45,12 +51,15 @@ def load_leader_model(expected_side, dof, physical_model_signs, environ=None):
         side = str(data["side"])
         raw = data["raw_to_dfc"]
         transform = data["dfc_to_factr"]
+        if "offset_rad" in transform:
+            raise ValueError(
+                "dfc_to_factr.offset_rad is derived by FACTR and must not be persisted"
+            )
         offsets = np.radians(np.asarray(raw["offsets_deg"], dtype=float))
         flips = [int(i) for i in raw["sign_flip_joints"]]
         raw_signs = np.ones(dof)
         raw_signs[flips] = -1.0
         transform_signs = np.asarray(transform["signs"], dtype=float)
-        transform_offset = np.asarray(transform["offset_rad"], dtype=float)
         home_dfc = np.asarray(data["home_q_rad"], dtype=float)
         drop = int(raw["drop_trailing"])
         gripper_open = float(raw["gripper_open"])
@@ -58,7 +67,8 @@ def load_leader_model(expected_side, dof, physical_model_signs, environ=None):
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"invalid DFC_LEADER_CONFIG: {exc}") from exc
 
-    vectors = (offsets, raw_signs, transform_signs, transform_offset, home_dfc)
+    home_factr = np.asarray(model_home_q_rad, dtype=float)
+    vectors = (offsets, raw_signs, transform_signs, home_dfc, home_factr)
     if side != expected_side:
         raise RuntimeError(
             f"DFC leader contract is for {side!r}, expected {expected_side!r}"
@@ -82,7 +92,7 @@ def load_leader_model(expected_side, dof, physical_model_signs, environ=None):
             "FACTR mechanism signs must contain one -1 or +1 per arm joint"
         )
 
-    home_factr = transform_signs * home_dfc + transform_offset
+    transform_offset = home_factr - transform_signs * home_dfc
     home_raw = raw_signs * home_dfc - offsets
     # FACTR owns the mechanism signs; DFC supplies the captured physical home.
     # q_model = model_signs * (q_raw - joint_offsets).

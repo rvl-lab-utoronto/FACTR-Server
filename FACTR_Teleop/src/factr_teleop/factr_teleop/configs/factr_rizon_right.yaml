@@ -28,8 +28,9 @@ arm_teleop:
   arm_joint_limits_min: [-2.8798, -2.3562, -3.0543, -1.9548, -3.0543, -1.4835, -3.0543]
   arm_joint_limits_safety_margin: 0.1
   initialization:
-    # Control/model target only. DFC owns and injects all leader calibration.
-    initial_match_joint_pos: [0.0, 0.0, 0.0, 1.57, 0.0, 0.0, 0.0]
+    # Authoritative dynamics-model home. DFC measures the physical leader at this
+    # target; FACTR derives every zero offset from that capture at launch.
+    model_home_q_rad: [0.0, 0.0, 0.0, 1.57, 0.0, 0.0, 0.0]
 gripper_teleop:
   # The maximum range (in rad) of the leader gripper trigger
   actuation_range: 10
