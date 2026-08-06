@@ -23,7 +23,7 @@ from .angles import periodic_joint_error
 from .gain_control import compose_arm_torque, ramp_gain
 from .leader_config import load_leader_model
 from .raw_joint_state import RawJointStateCache
-from factr_teleop.dynamixel.driver import DynamixelDriver
+from .dynamixel.driver import DynamixelDriver, DynamixelReadError
 
 
 def find_ttyusb(port_name):
@@ -412,9 +412,26 @@ class FACTRTeleopDualBase(Node, ABC):
         changes calibration.
         """
         # Warm up both boards before auditing the DFC-provided model mapping.
-        for _ in range(10):
-            self._read_merged_pos_vel()
-        curr_joints, curr_vel = self._read_merged_pos_vel()
+        # Every acquisition still gets exactly one serial attempt. Startup has
+        # no timer yet, so a missed attempt is ignored here and a separate one
+        # begins after ``dt`` until enough complete samples arrive.
+        startup_deadline = time.monotonic() + 5.0
+        successful_samples = 0
+        curr_joints = curr_vel = None
+        while successful_samples < 11:
+            try:
+                curr_joints, curr_vel = self._read_merged_pos_vel(
+                    source="startup"
+                )
+            except DynamixelReadError as exc:
+                if time.monotonic() >= startup_deadline:
+                    raise DynamixelReadError(
+                        "Dynamixel startup did not produce 11 complete samples "
+                        "within 5 seconds"
+                    ) from exc
+                time.sleep(self.dt)
+                continue
+            successful_samples += 1
         self._raw_joint_state_cache.update(curr_joints, curr_vel)
 
         # With saved arm calibration, do not infer any arm offset from the launch pose.

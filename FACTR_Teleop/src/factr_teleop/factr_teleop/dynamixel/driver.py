@@ -61,6 +61,8 @@ POSITION_CONTROL_MODE = 3
 # control behavior remains unchanged while Rerun gets the exact before/after ticks.
 POSITION_JUMP_THRESHOLD_RAD = 0.5
 DIAGNOSTIC_EVENT_HISTORY = 32
+USB_LATENCY_TIMER_MS = 1.0
+PACKET_RESPONSE_MARGIN_MS = 32.0
 EVENT_HEALTH_SNAPSHOT_COOLDOWN_S = 1.0
 
 # Health/diagnostics registers (X-series control table; same for XC330 and XM430).
@@ -104,6 +106,29 @@ def hw_error_flags(bits):
     if not bits:
         return []
     return [name for bit, name in HW_ERROR_BITS if bits & bit]
+
+
+class DynamixelReadError(RuntimeError):
+    """One bounded Dynamixel state acquisition did not complete."""
+
+
+class LowLatencyPortHandler(PortHandler):
+    """Port handler whose software deadline matches the asserted FTDI latency.
+
+    The ROS Humble SDK hard-codes a 16 ms latency allowance even when Linux's
+    ``latency_timer`` is 1 ms. Its deadline therefore adds 34 ms to every
+    failed Sync Read. FACTR asserts the kernel value before opening a board, so
+    use that same value plus a bounded group-response/scheduling margin without
+    modifying ``/opt/ros``.
+    """
+
+    def setPacketTimeout(self, packet_length):
+        self.packet_start_time = self.getCurrentTime()
+        self.packet_timeout = (
+            self.tx_time_per_byte * packet_length
+            + USB_LATENCY_TIMER_MS * 2.0
+            + PACKET_RESPONSE_MARGIN_MS
+        )
 
 
 class DiagnosticGroupSyncRead(GroupSyncRead):
@@ -207,7 +232,7 @@ class DynamixelDriver(DynamixelDriverProtocol):
         self._last_event_health_at = 0.0
         self._last_event_health = []
 
-        self._portHandler = PortHandler(port)
+        self._portHandler = LowLatencyPortHandler(port)
         self._packetHandler = PacketHandler(2.0)
         self._groupSyncRead = DiagnosticGroupSyncRead(
             self._portHandler, self._packetHandler, ADDR_PRESENT_VELOCITY, LEN_PRESENT_POSITION + LEN_PRESENT_VELOCITY,
@@ -219,6 +244,9 @@ class DynamixelDriver(DynamixelDriverProtocol):
             raise RuntimeError("Failed to open the port")
         if not self._portHandler.setBaudRate(baudrate):
             raise RuntimeError(f"Failed to change the baudrate, {baudrate}")
+        # Keep the SDK's nonblocking packet reader. The bounded packet deadline
+        # prevents a missed transaction from spinning indefinitely.
+        self._portHandler.ser.timeout = 0
 
         for dxl_id in self._ids:
             if not self._groupSyncRead.addParam(dxl_id):
@@ -280,7 +308,7 @@ class DynamixelDriver(DynamixelDriverProtocol):
             if dxl_comm_result != COMM_SUCCESS or dxl_error != 0 or mode != expected_mode:
                 raise RuntimeError(f"Operating mode mismatch for Dynamixel ID {dxl_id}")
 
-    def get_positions_and_velocities(self, tries=10, source="unspecified"):
+    def get_positions_and_velocities(self, tries=0, source="unspecified"):
         _positions = np.zeros(len(self._ids), dtype=int)
         _velocities = np.zeros(len(self._ids), dtype=int)
 
@@ -294,7 +322,10 @@ class DynamixelDriver(DynamixelDriverProtocol):
             failed_results.append(int(dxl_comm_result))
         else:
             self._record_failed_read(source, failed_results)
-            raise RuntimeError(f"Warning, communication failed: {dxl_comm_result}")
+            raise DynamixelReadError(
+                f"Dynamixel read failed on {self._port} "
+                f"(source={source}, result={dxl_comm_result})"
+            )
         
         for i, dxl_id in enumerate(self._ids):
             # read velocity data

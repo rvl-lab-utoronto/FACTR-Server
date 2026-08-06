@@ -16,6 +16,7 @@ from sensor_msgs.msg import JointState # from ROS2
 # colcon install/ copy and miss edits made here.
 from .factr_teleop_dual_base import FACTRTeleopDualBase
 from .gain_control import compose_arm_torque
+from .dynamixel.driver import DynamixelReadError
 
 import numpy as np
 import time
@@ -46,6 +47,7 @@ class FactrRizonTeleopDualBoard(FACTRTeleopDualBase):
         # publish joint_pos every 2ms
 
         self.index = arm_index
+        self._last_published_joint_sequence = 0
 
 
     def get_leader_joint_pos(self):
@@ -58,12 +60,22 @@ class FactrRizonTeleopDualBoard(FACTRTeleopDualBase):
         return self.get_cached_raw_joint_state().position
 
 
-    def control_loop_callback(self):    
+    def control_loop_callback(self):
         """
-        Additional control loop feature: update the joint positions of one of the leader arms (left or right), runs at 500Hz
+        Acquire state and update one leader-arm torque command.
         """
 
-        leader_arm_pos, leader_arm_vel, leader_gripper_pos, leader_gripper_vel = self.get_leader_joint_states()
+        try:
+            leader_arm_pos, leader_arm_vel, leader_gripper_pos, leader_gripper_vel = self.get_leader_joint_states()
+        except DynamixelReadError as exc:
+            # A timer tick is the retry. Never spend a real-time callback making
+            # repeated serial attempts; retain the previous torque command and
+            # let the next scheduled tick acquire a new state.
+            self.get_logger().warning(
+                f"FACTR TELEOP {self.name}: skipped control tick after {exc}",
+                throttle_duration_sec=1.0,
+            )
+            return
 
         torque_l, torque_gripper = self.joint_limit_barrier(
             leader_arm_pos, leader_arm_vel, leader_gripper_pos, leader_gripper_vel
@@ -106,11 +118,15 @@ class FactrRizonTeleopDualBoard(FACTRTeleopDualBase):
 
 
     def publish_joint_pos(self):
+        state = self.get_cached_raw_joint_state()
+        if state.sequence <= self._last_published_joint_sequence:
+            return
+
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.name = [f'joint_{i}' for i in range(7)]
 
-        positions = self.get_leader_joint_pos().tolist()
+        positions = state.position.tolist()
         msg.position = positions
 
         msg.velocity = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] 
@@ -119,6 +135,7 @@ class FactrRizonTeleopDualBoard(FACTRTeleopDualBase):
             self.get_logger().info("motors not ready")
 
         self.joint_pos_publisher.publish(msg)
+        self._last_published_joint_sequence = state.sequence
 
 
     def set_up_communication(self):

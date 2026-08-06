@@ -5,11 +5,14 @@ from collections import deque
 from threading import Lock
 
 import numpy as np
+import pytest
 
 from factr_teleop.dynamixel.driver import (
     DIAGNOSTIC_EVENT_HISTORY,
     DiagnosticGroupSyncRead,
     DynamixelDriver,
+    DynamixelReadError,
+    LowLatencyPortHandler,
 )
 
 
@@ -57,6 +60,33 @@ def test_group_sync_read_retains_status_packet_error_byte():
 
     assert read.rxPacket() == 0
     assert read.error_dict == {1: 0x80}
+
+
+def test_low_latency_packet_deadline_matches_one_ms_ftdi_setting():
+    port = LowLatencyPortHandler.__new__(LowLatencyPortHandler)
+    port.tx_time_per_byte = 0.0025  # 4 Mbps, 10 serial bits per byte, in ms
+    port.setPacketTimeout(114)      # six 8-byte status packets
+
+    assert port.packet_timeout == pytest.approx(34.285)
+
+
+def test_default_read_attempts_once_then_returns_control_to_caller():
+    class FailedRead:
+        error_dict = {}
+        calls = 0
+
+        def txRxPacket(self):
+            self.calls += 1
+            return -3001
+
+    driver = _driver_without_hardware()
+    driver._groupSyncRead = FailedRead()
+
+    with pytest.raises(DynamixelReadError):
+        driver.get_positions_and_velocities(source="control")
+
+    assert driver._groupSyncRead.calls == 1
+    assert driver.diagnostics_snapshot()["comm_failure_count"] == 1
 
 
 def test_records_raw_reads_retries_jump_alert_and_fault_snapshot():
