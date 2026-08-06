@@ -16,7 +16,6 @@ class LeaderModelConfig:
     side: str
     raw_offsets_rad: np.ndarray
     raw_signs: np.ndarray
-    wrap: bool
     dfc_to_factr_signs: np.ndarray
     dfc_to_factr_offset_rad: np.ndarray
     home_factr_q_rad: np.ndarray
@@ -102,7 +101,6 @@ def load_leader_model(
         side=side,
         raw_offsets_rad=offsets,
         raw_signs=raw_signs,
-        wrap=bool(raw["wrap_deg"]),
         dfc_to_factr_signs=transform_signs,
         dfc_to_factr_offset_rad=transform_offset,
         home_factr_q_rad=home_factr,

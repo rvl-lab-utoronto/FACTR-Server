@@ -12,7 +12,6 @@ def _contract():
         "raw_to_dfc": {
             "offsets_deg": [10.0, -20.0],
             "sign_flip_joints": [1],
-            "wrap_deg": True,
             "drop_trailing": 1,
             "gripper_open": 1.0,
             "gripper_closed": 2.0,
