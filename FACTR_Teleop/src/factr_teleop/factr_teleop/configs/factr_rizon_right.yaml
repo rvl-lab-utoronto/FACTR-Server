@@ -35,13 +35,12 @@ gripper_teleop:
 
 controller:
   frequency: 500
-  # Servo health telemetry (temp + current) sample period in seconds. 0.1 = 10 Hz.
-  # read_health() batches all servos into 2 GroupSyncRead transactions, so 10 Hz is
-  # cheap (a few ms/sample, not the ~30 ms of the old per-servo reads). 0 disables.
-  health_log_period: 0
+  # Required by DFC's native leader visualization (`model_q_rad` telemetry).
+  telemetry_enabled: true
   torque_feedback:
     enable: True
-    gain: 3.0
+    # Gravity-only tuning: suppress every non-gravity arm-torque term.
+    gain: 0.0
     damping: 0.0
     motor_scalar: 94.5652173913
     # Staleness cutoff [s] and per-joint clip [Nm] for the follower external-torque
@@ -61,16 +60,16 @@ controller:
   null_space_regulation:
     enable: false
     null_space_joint_target: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] # TODO: edit this to home pose of follower arm
-    kp: 0.1
-    kd: 0.01
+    kp: 0.0
+    kd: 0.0
   static_friction_comp:
     enable_speed: 0.9
-    gain: 0.6
+    gain: 0.0
   joint_limit_barrier:
     # Disabled: no leader-side end-stop repulsion (no follower-range protection from FACTR).
     enable: false
-    kp: 1.03561658022
-    kd: 0.04315069084
+    kp: 0.0
+    kd: 0.0
   joint_position_control:
     interpolation_step_size: 0.5
     kp: 1.03561658022

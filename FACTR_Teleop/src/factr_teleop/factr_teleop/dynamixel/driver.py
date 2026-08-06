@@ -62,50 +62,7 @@ POSITION_CONTROL_MODE = 3
 POSITION_JUMP_THRESHOLD_RAD = 0.5
 DIAGNOSTIC_EVENT_HISTORY = 32
 USB_LATENCY_TIMER_MS = 1.0
-PACKET_RESPONSE_MARGIN_MS = 32.0
-EVENT_HEALTH_SNAPSHOT_COOLDOWN_S = 1.0
-
-# Health/diagnostics registers (X-series control table; same for XC330 and XM430).
-ADDR_CURRENT_LIMIT = 38            # 2 bytes, EEPROM (constant)
-ADDR_HARDWARE_ERROR_STATUS = 70    # 1 byte; latched fault bits, cleared only by reboot/power-cycle
-ADDR_REALTIME_TICK = 120            # 2 bytes, 1 ms tick, wraps every 32.768 s
-ADDR_PRESENT_PWM = 124             # 2 bytes, signed
-ADDR_PRESENT_CURRENT = 126         # 2 bytes, signed
-# ADDR_PRESENT_VELOCITY = 128 (4B signed), ADDR_PRESENT_POSITION = 132 (4B signed) defined above
-ADDR_POSITION_TRAJECTORY = 140     # 4 bytes, signed
-ADDR_PRESENT_INPUT_VOLTAGE = 144   # 2 bytes, unit 0.1 V
-ADDR_PRESENT_TEMPERATURE = 146     # 1 byte, deg C
-
-# Contiguous RAM blocks for batched GroupSyncRead health telemetry: two bus transactions
-# for ALL servos instead of ~N individual reads per servo -> cheap enough for ~10 Hz.
-# Block B spans Realtime Tick(120)..Temperature(146), so one read covers the reboot
-# clue plus pwm / current / velocity / position / trajectory / voltage / temperature.
-LEN_HEALTH_BLOCK_A = ADDR_HARDWARE_ERROR_STATUS - ADDR_TORQUE_ENABLE + 1   # 64..70: torque_enable + hw_error
-LEN_HEALTH_BLOCK_B = ADDR_PRESENT_TEMPERATURE - ADDR_REALTIME_TICK + 1     # 120..146
-
-
-def _signed(value, byte_len):
-    """Interpret an unsigned register value as two's-complement signed (2- or 4-byte)."""
-    if value is None:
-        return None
-    bits = byte_len * 8
-    return value - (1 << bits) if value >= (1 << (bits - 1)) else value
-
-#: Hardware Error Status (addr 70) bit -> label, per the X-series control table.
-HW_ERROR_BITS = (
-    (0x01, "INPUT_VOLTAGE"),
-    (0x04, "OVERHEATING"),
-    (0x08, "MOTOR_ENCODER"),
-    (0x10, "ELECTRICAL_SHOCK"),
-    (0x20, "OVERLOAD"),
-)
-
-
-def hw_error_flags(bits):
-    """Decode a Dynamixel Hardware Error Status byte (addr 70) into a list of labels."""
-    if not bits:
-        return []
-    return [name for bit, name in HW_ERROR_BITS if bits & bit]
+PACKET_RESPONSE_MARGIN_MS = 8.0
 
 
 class DynamixelReadError(RuntimeError):
@@ -118,8 +75,10 @@ class LowLatencyPortHandler(PortHandler):
     The ROS Humble SDK hard-codes a 16 ms latency allowance even when Linux's
     ``latency_timer`` is 1 ms. Its deadline therefore adds 34 ms to every
     failed Sync Read. FACTR asserts the kernel value before opening a board, so
-    use that same value plus a bounded group-response/scheduling margin without
-    modifying ``/opt/ros``.
+    use that same value plus a bounded response/scheduling margin without
+    modifying ``/opt/ros``. The two-board leader needs more than the SDK's
+    nominal 2 ms margin in practice; 8 ms avoids false timeouts while keeping
+    a missing response far below the upstream deadline.
     """
 
     def setPacketTimeout(self, packet_length):
@@ -217,7 +176,6 @@ class DynamixelDriver(DynamixelDriverProtocol):
         self._positions = None
         self._lock = Lock()
         self._diagnostics_lock = Lock()
-        self._current_limit_cache = None   # lazily filled by read_health() (EEPROM, constant)
         self._diagnostic_session = time.monotonic_ns()
         self._read_sequence = 0
         self._event_sequence = 0
@@ -229,8 +187,6 @@ class DynamixelDriver(DynamixelDriverProtocol):
         self._last_status_errors = {}
         self._latest_reads = {}
         self._diagnostic_events = deque(maxlen=DIAGNOSTIC_EVENT_HISTORY)
-        self._last_event_health_at = 0.0
-        self._last_event_health = []
 
         self._portHandler = LowLatencyPortHandler(port)
         self._packetHandler = PacketHandler(2.0)
@@ -251,18 +207,6 @@ class DynamixelDriver(DynamixelDriverProtocol):
         for dxl_id in self._ids:
             if not self._groupSyncRead.addParam(dxl_id):
                 raise RuntimeError(f"Failed to add parameter for Dynamixel with ID {dxl_id}")
-
-        # Health telemetry: two contiguous GroupSyncReads (torque/error block + current/
-        # temp block) so read_health() costs ~2 bus transactions instead of ~4 per servo.
-        self._healthReadA = GroupSyncRead(
-            self._portHandler, self._packetHandler, ADDR_TORQUE_ENABLE, LEN_HEALTH_BLOCK_A
-        )
-        self._healthReadB = GroupSyncRead(
-            self._portHandler, self._packetHandler, ADDR_REALTIME_TICK, LEN_HEALTH_BLOCK_B
-        )
-        for dxl_id in self._ids:
-            self._healthReadA.addParam(dxl_id)
-            self._healthReadB.addParam(dxl_id)
 
         self.torque_to_current_map = np.array(
             [TORQUE_TO_CURRENT_MAPPING[servo] for servo in servo_types]
@@ -364,7 +308,7 @@ class DynamixelDriver(DynamixelDriverProtocol):
         
         return positions_in_radians, velocities_in_units
 
-    def _append_event(self, kind, stamp_monotonic_ns, details, health=None):
+    def _append_event(self, kind, stamp_monotonic_ns, details):
         """Append one JSON-safe diagnostic event to the retained in-process ring."""
         with self._diagnostics_lock:
             self._event_sequence += 1
@@ -376,8 +320,6 @@ class DynamixelDriver(DynamixelDriverProtocol):
                 "session": self._diagnostic_session,
                 **details,
             }
-            if health is not None:
-                event["health"] = health
             self._diagnostic_events.append(event)
 
     def _record_failed_read(self, source, failed_results):
@@ -451,10 +393,6 @@ class DynamixelDriver(DynamixelDriverProtocol):
                 np.abs(delta_rad) >= POSITION_JUMP_THRESHOLD_RAD
             ).tolist()
 
-        health = None
-        if jump_indices or new_alerts:
-            health = self._event_health_snapshot()
-
         if jump_indices:
             with self._diagnostics_lock:
                 self._position_jump_count += 1
@@ -470,7 +408,6 @@ class DynamixelDriver(DynamixelDriverProtocol):
                     "delta_rad": delta_rad.tolist(),
                     "threshold_rad": POSITION_JUMP_THRESHOLD_RAD,
                 },
-                health,
             )
 
         if new_alerts:
@@ -486,7 +423,6 @@ class DynamixelDriver(DynamixelDriverProtocol):
                         str(dxl_id): error for dxl_id, error in new_alerts.items()
                     },
                 },
-                health,
             )
 
         if cleared_alerts:
@@ -499,21 +435,6 @@ class DynamixelDriver(DynamixelDriverProtocol):
                     "servo_ids": cleared_alerts,
                 },
             )
-
-    def _event_health_snapshot(self):
-        """Read fault registers once per anomaly cluster, never periodically."""
-        now = time.monotonic()
-        with self._diagnostics_lock:
-            if now - self._last_event_health_at < EVENT_HEALTH_SNAPSHOT_COOLDOWN_S:
-                return copy.deepcopy(self._last_event_health)
-            self._last_event_health_at = now
-        try:
-            health = self.read_health(include_current_limit=False)
-        except Exception as exc:
-            health = [{"snapshot_error": str(exc)}]
-        with self._diagnostics_lock:
-            self._last_event_health = copy.deepcopy(health)
-        return health
 
     def diagnostics_snapshot(self):
         """Return counters, latest raw reads, and retained events with no bus I/O."""
@@ -594,85 +515,6 @@ class DynamixelDriver(DynamixelDriverProtocol):
         if dxl_comm_result != COMM_SUCCESS:
             raise RuntimeError("Failed to syncwrite goal position")
         group.clearParam()
-
-    def read_health(self, include_current_limit=True):
-        """Best-effort per-servo health telemetry for diagnosing torque dropouts.
-
-        Returns one dict per servo id with keys: ``id``, ``torque_enable`` (0/1),
-        ``hw_error`` (raw Hardware Error Status byte, reg 70), ``hw_error_flags`` (list
-        of labels), ``realtime_tick`` (reg 120, 1 ms), ``present_pwm`` (reg 124,
-        signed), ``present_current`` (reg 126,
-        signed), ``present_velocity`` (reg 128, signed), ``present_position`` (reg 132,
-        signed), ``position_trajectory`` (reg 140, signed), ``input_voltage`` (reg 144,
-        raw, 0.1 V/LSB), ``temperature`` (reg 146, deg C), ``current_limit`` (reg 38).
-        Any field that fails to read is ``None``.
-
-        Uses TWO GroupSyncRead transactions (block A 64..70 for torque/error, block B
-        120..146 for tick/pwm/current/velocity/position/trajectory/voltage/temp)
-        covering all servos at once -- ~2 bus round-trips regardless of field count -- so
-        it is cheap enough to call at ~10 Hz without badly stalling the control loop. The
-        Current Limit is EEPROM/constant, so it is read once (via individual TxRx) and cached.
-        """
-        if include_current_limit and self._current_limit_cache is None:
-            self._current_limit_cache = []
-            for dxl_id in self._ids:
-                lim, res, _ = self._packetHandler.read2ByteTxRx(
-                    self._portHandler, dxl_id, ADDR_CURRENT_LIMIT
-                )
-                self._current_limit_cache.append(int(lim) if res == COMM_SUCCESS else None)
-
-        # Two batched reads for ALL servos (block A: torque/error, block B: 120..146).
-        ok_a = self._healthReadA.txRxPacket() == COMM_SUCCESS
-        ok_b = self._healthReadB.txRxPacket() == COMM_SUCCESS
-
-        health = []
-        for i, dxl_id in enumerate(self._ids):
-            te = he = None
-            tick = None
-            pwm = present_current = velocity = position = pos_traj = voltage = tmp = None
-            if ok_a:
-                if self._healthReadA.isAvailable(dxl_id, ADDR_TORQUE_ENABLE, 1):
-                    te = self._healthReadA.getData(dxl_id, ADDR_TORQUE_ENABLE, 1)
-                if self._healthReadA.isAvailable(dxl_id, ADDR_HARDWARE_ERROR_STATUS, 1):
-                    he = self._healthReadA.getData(dxl_id, ADDR_HARDWARE_ERROR_STATUS, 1)
-            if ok_b:
-                b = self._healthReadB
-                if b.isAvailable(dxl_id, ADDR_REALTIME_TICK, 2):
-                    tick = b.getData(dxl_id, ADDR_REALTIME_TICK, 2)
-                if b.isAvailable(dxl_id, ADDR_PRESENT_PWM, 2):
-                    pwm = _signed(b.getData(dxl_id, ADDR_PRESENT_PWM, 2), 2)
-                if b.isAvailable(dxl_id, ADDR_PRESENT_CURRENT, 2):
-                    present_current = _signed(b.getData(dxl_id, ADDR_PRESENT_CURRENT, 2), 2)
-                if b.isAvailable(dxl_id, ADDR_PRESENT_VELOCITY, 4):
-                    velocity = _signed(b.getData(dxl_id, ADDR_PRESENT_VELOCITY, 4), 4)
-                if b.isAvailable(dxl_id, ADDR_PRESENT_POSITION, 4):
-                    position = _signed(b.getData(dxl_id, ADDR_PRESENT_POSITION, 4), 4)
-                if b.isAvailable(dxl_id, ADDR_POSITION_TRAJECTORY, 4):
-                    pos_traj = _signed(b.getData(dxl_id, ADDR_POSITION_TRAJECTORY, 4), 4)
-                if b.isAvailable(dxl_id, ADDR_PRESENT_INPUT_VOLTAGE, 2):
-                    voltage = b.getData(dxl_id, ADDR_PRESENT_INPUT_VOLTAGE, 2)   # unsigned, 0.1 V/LSB
-                if b.isAvailable(dxl_id, ADDR_PRESENT_TEMPERATURE, 1):
-                    tmp = b.getData(dxl_id, ADDR_PRESENT_TEMPERATURE, 1)
-            health.append({
-                "id": int(dxl_id),
-                "torque_enable": int(te) if te is not None else None,
-                "hw_error": int(he) if he is not None else None,
-                "hw_error_flags": hw_error_flags(he) if he is not None else None,
-                "realtime_tick": int(tick) if tick is not None else None,
-                "present_pwm": pwm,
-                "present_current": present_current,
-                "present_velocity": velocity,
-                "present_position": position,
-                "position_trajectory": pos_traj,
-                "input_voltage": int(voltage) if voltage is not None else None,
-                "temperature": int(tmp) if tmp is not None else None,
-                "current_limit": (
-                    self._current_limit_cache[i]
-                    if self._current_limit_cache is not None else None
-                ),
-            })
-        return health
-
 
 def main():
     # script for testing purposes

@@ -103,26 +103,17 @@ _TORQUE_FIELDS = (
 
 _TELEMETRY_FIELDS = _READING_FIELDS + _GAIN_FIELDS + _TORQUE_FIELDS
 
-# Nested Dynamixel diagnostics. Counters/alerts belong to Status; physical and
-# low-level servo measurements belong to Monitoring. Event values are populated
-# from one-shot health snapshots without adding serial reads to the control loop.
+# Passive Dynamixel diagnostics derived from the normal control read.
 _STATUS_DYNAMIXEL_VIEWS = (
     ("dynamixel/counters/comm_retries", "Communication retries (cumulative)"),
     ("dynamixel/counters/comm_failures", "Communication failures (cumulative)"),
     ("dynamixel/counters/status_alerts", "Servo status alerts (cumulative)"),
     ("dynamixel/counters/position_jumps", "Implausible position jumps (cumulative)"),
-    ("dynamixel/event/hardware_error_status", "Event hardware-error status (reg 70)"),
-    ("dynamixel/event/torque_enable", "Event torque enable (reg 64)"),
 )
 
 _MONITORING_DYNAMIXEL_VIEWS = (
-    ("dynamixel/event/input_voltage_v", "Event input voltage (V, reg 144)"),
-    ("dynamixel/event/present_current_raw", "Event present current (raw reg 126)"),
-    ("dynamixel/event/temperature_c", "Event temperature (°C, reg 146)"),
     ("dynamixel/control/raw_position_ticks", "Control-read raw position (ticks)"),
     ("dynamixel/control/raw_velocity_ticks", "Control-read raw velocity (ticks)"),
-    ("dynamixel/event/realtime_tick", "Event realtime tick (ms, reg 120)"),
-    ("dynamixel/event/present_position_ticks", "Event present position (ticks, reg 132)"),
 )
 
 _DYNAMIXEL_VIEWS = _STATUS_DYNAMIXEL_VIEWS + _MONITORING_DYNAMIXEL_VIEWS
@@ -435,7 +426,6 @@ class FactrRerunPublisher:
                         + json.dumps(event, sort_keys=True, separators=(",", ":"))
                     ),
                 )
-                self._log_event_health(side, event.get("health") or [])
                 history = self._event_history.setdefault(side, [])
                 history.append(event)
                 del history[:-_EVENT_LEDGER_SIZE]
@@ -459,37 +449,6 @@ class FactrRerunPublisher:
             self._rr.TextDocument(markdown, media_type=self._rr.MediaType.MARKDOWN),
             static=True,
         )
-
-    def _log_event_health(self, side: str, health: list) -> None:
-        """Plot the fault-register snapshot attached to a diagnostic event."""
-        rows = sorted(
-            (row for row in health if isinstance(row, dict) and "id" in row),
-            key=lambda row: int(row["id"]),
-        )
-        if not rows:
-            return
-        fields = {
-            "hardware_error_status": ("hw_error", 1.0),
-            "input_voltage_v": ("input_voltage", 0.1),
-            "present_current_raw": ("present_current", 1.0),
-            "realtime_tick": ("realtime_tick", 1.0),
-            "torque_enable": ("torque_enable", 1.0),
-            "temperature_c": ("temperature", 1.0),
-            "present_position_ticks": ("present_position", 1.0),
-        }
-        for row in rows:
-            dxl_id = int(row["id"])
-            for path, (field, scale) in fields.items():
-                value = row.get(field)
-                if value is None:
-                    continue
-                # One stable entity per servo: dual-board events may snapshot only
-                # the triggering board, so vector indices would otherwise change
-                # meaning between events.
-                self._rec.log(
-                    f"factr/{side}/telemetry/dynamixel/event/{path}/id_{dxl_id}",
-                    self._rr.Scalars([float(value) * scale]),
-                )
 
     def _log_calibration(self, side: str, payload: dict) -> None:
         snapshot = {k: v for k, v in payload.items() if k != "enable_samples"}

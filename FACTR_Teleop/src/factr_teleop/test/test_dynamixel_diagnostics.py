@@ -32,15 +32,6 @@ def _driver_without_hardware():
     driver._last_status_errors = {}
     driver._latest_reads = {}
     driver._diagnostic_events = deque(maxlen=DIAGNOSTIC_EVENT_HISTORY)
-    driver._event_health_snapshot = lambda: [{
-        "id": 2,
-        "hw_error": 8,
-        "realtime_tick": 12,
-        "input_voltage": 118,
-        "torque_enable": 0,
-        "temperature": 31,
-        "present_position": 2048,
-    }]
     return driver
 
 
@@ -67,7 +58,7 @@ def test_low_latency_packet_deadline_matches_one_ms_ftdi_setting():
     port.tx_time_per_byte = 0.0025  # 4 Mbps, 10 serial bits per byte, in ms
     port.setPacketTimeout(114)      # six 8-byte status packets
 
-    assert port.packet_timeout == pytest.approx(34.285)
+    assert port.packet_timeout == pytest.approx(10.285)
 
 
 def test_default_read_attempts_once_then_returns_control_to_caller():
@@ -89,7 +80,7 @@ def test_default_read_attempts_once_then_returns_control_to_caller():
     assert driver.diagnostics_snapshot()["comm_failure_count"] == 1
 
 
-def test_records_raw_reads_retries_jump_alert_and_fault_snapshot():
+def test_records_raw_reads_retries_jump_and_alert_without_extra_bus_reads():
     driver = _driver_without_hardware()
     driver._record_successful_read(
         "control", np.array([0, 0]), np.array([1, 2]), [], {1: 0, 2: 0}
@@ -115,7 +106,7 @@ def test_records_raw_reads_retries_jump_alert_and_fault_snapshot():
     jump = snapshot["events"][1]
     assert jump["servo_ids"] == [2]
     assert jump["delta_rad"] == [0.0, np.pi]
-    assert jump["health"][0]["hw_error"] == 8
+    assert "health" not in jump
 
 
 def test_records_terminal_communication_failure():

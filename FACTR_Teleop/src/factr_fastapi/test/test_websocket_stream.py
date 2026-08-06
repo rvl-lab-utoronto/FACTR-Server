@@ -166,16 +166,6 @@ def test_rerun_logs_retained_dynamixel_event_only_once():
             "session": 123,
             "stamp_monotonic_ns": 1_000_000_000,
             "kind": "status_alert",
-            "health": [{
-                "id": 1,
-                "hw_error": 8,
-                "input_voltage": 119,
-                "present_current": -12,
-                "realtime_tick": 42,
-                "torque_enable": 0,
-                "temperature": 30,
-                "present_position": 10,
-            }],
         }],
     }
 
@@ -184,18 +174,7 @@ def test_rerun_logs_retained_dynamixel_event_only_once():
 
     event_logs = [log for log in publisher._rec.logs if log[0] == "factr/events/left"]
     assert len(event_logs) == 1
-    voltage_logs = [
-        log for log in publisher._rec.logs
-        if log[0].endswith("dynamixel/event/input_voltage_v/id_1")
-    ]
-    assert len(voltage_logs) == 1
-    current_logs = [
-        log for log in publisher._rec.logs
-        if log[0].endswith("dynamixel/event/present_current_raw/id_1")
-    ]
-    assert len(current_logs) == 1
-    assert current_logs[0][1].value == [-12.0]
-    assert voltage_logs[0][1].value == [11.9]
+    assert not any("dynamixel/event/" in log[0] for log in publisher._rec.logs)
     ledger_logs = [
         log for log in publisher._rec.logs
         if log[0] == "factr/event_ledger/left"

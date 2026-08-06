@@ -8,6 +8,7 @@ import json
 import os
 import threading
 import time
+import traceback
 import yaml
 import subprocess
 import numpy as np
@@ -82,6 +83,9 @@ class FACTRTeleopDualBase(Node, ABC):
         self.name = self.config["name"]
         self.side = "left" if arm_index == 0 else "right"
         self.dt = 1 / self.config["controller"]["frequency"]
+        self._control_stop = threading.Event()
+        self._control_thread = None
+        self._control_thread_error = None
         
         self._prepare_dynamixel()
         self._raw_joint_state_cache = RawJointStateCache(self.num_motors)
@@ -201,7 +205,15 @@ class FACTRTeleopDualBase(Node, ABC):
         )
         self._telemetry_snapshot = {}
         self._telemetry_pub = self.create_publisher(String, f"/factr_telemetry_{side}", 10)
-        self.create_timer(0.02, self._publish_telemetry, callback_group=self._gain_cb_group)
+        self.telemetry_enabled = bool(
+            self.config["controller"].get("telemetry_enabled", True)
+        )
+        if self.telemetry_enabled:
+            self.create_timer(
+                0.02,
+                self._publish_telemetry,
+                callback_group=self._gain_cb_group,
+            )
 
         # Follower external joint torques for the force-feedback term, pushed by the
         # DFC client through the FACTR API relay (WS force_feedback frames or
@@ -223,23 +235,11 @@ class FACTRTeleopDualBase(Node, ABC):
         # DFC owns calibration; FACTR uses the derived dynamics-model contract.
         self._get_dynamixel_offsets()
 
-        # --- servo health diagnostics (throttled; for torque-dropout debugging) ---
-        # Reads temperature / present current / hardware-error per servo at low rate and
-        # logs it, with a loud warning if any servo latches a hardware error (e.g. the
-        # base joint OVERLOAD/OVERHEAT that silently kills its gravity comp). See
-        # DynamixelDriver.read_health(). Set period to 0 to disable.c FACTRT
-        self.health_log_period = self.config["controller"].get("health_log_period", 1.0)
-        self._last_health_log = time.time()
-
-        # start the control loop
-        # self.dt = 500Hz
-        # self.timer = self.create_timer(self.dt, self.control_loop_callback)
-
-        
-        self._initialize_position()
+        # The subclass starts the dedicated control thread only after constructing
+        # publishers and any other state used by ``control_loop_callback``.
 
     def _initialize_position(self):
-        """ Initialize positions"""
+        """Start the control loop after the concrete node is fully constructed."""
         # # refer to Dynamixel Wizard
         # self.driver_big.set_torque_mode(False) # turn it off first
         # self.driver_big.set_operating_mode(3) # mode 3
@@ -253,9 +253,61 @@ class FACTRTeleopDualBase(Node, ABC):
         # self.driver_small.set_position([0, 6.4, 3, 4.7, 2, 0])
         
         # time.sleep(4)
-        # start control loop only after the positions are initialized
-        self.timer = self.create_timer(self.dt, self.control_loop_callback)
-        return 
+        self.start_control_loop()
+
+    def start_control_loop(self):
+        """Run serial acquisition and torque control outside the ROS executor."""
+        if self._control_thread is not None and self._control_thread.is_alive():
+            return
+        self._control_thread_error = None
+        self._control_stop.clear()
+        self._control_thread = threading.Thread(
+            target=self._control_loop_worker,
+            name=f"factr-{self.side}-control",
+            daemon=False,
+        )
+        self._control_thread.start()
+
+    def _control_loop_worker(self):
+        """Execute one bounded control transaction per period, without catch-up bursts."""
+        next_deadline = time.monotonic()
+        while not self._control_stop.is_set():
+            try:
+                self.control_loop_callback()
+            except Exception as exc:
+                self._control_thread_error = exc
+                self._control_stop.set()
+                self.get_logger().error(
+                    f"FACTR TELEOP {self.name}: dedicated control thread failed:\n"
+                    f"{traceback.format_exc()}"
+                )
+                # A dead control thread would leave the servos holding their last
+                # current indefinitely. Wake the executor so normal shutdown joins
+                # this thread, writes zero torque, and disables both boards.
+                try:
+                    self.context.try_shutdown()
+                except Exception:
+                    pass
+                return
+
+            next_deadline += self.dt
+            remaining = next_deadline - time.monotonic()
+            if remaining > 0.0:
+                self._control_stop.wait(remaining)
+            else:
+                # The serial transaction overran its nominal period. Start the next
+                # transaction immediately, but never replay missed 500 Hz ticks.
+                next_deadline = time.monotonic()
+
+    def stop_control_loop(self):
+        """Stop and join the control thread before touching either serial port."""
+        thread = self._control_thread
+        if thread is None:
+            return
+        self._control_stop.set()
+        if thread is not threading.current_thread():
+            thread.join()
+        self._control_thread = None
 
 
     def _prepare_dynamixel(self):
@@ -472,9 +524,15 @@ class FACTRTeleopDualBase(Node, ABC):
         """
         Disables all torque on the leader arm and gripper during node shutdown.
         """
+        self.stop_control_loop()
         self.set_leader_joint_torque(np.zeros(self.num_arm_joints), 0.0)
         for driver in self._drivers():
             driver.set_torque_mode(False)
+
+    def destroy_node(self):
+        """Ensure no control transaction survives destruction of the ROS node."""
+        self.stop_control_loop()
+        return super().destroy_node()
 
     def get_leader_joint_states(self):
         """
@@ -772,106 +830,6 @@ this is not what I want to
     def control_loop_callback(self):
         # visit factr_rizon_dual_board.py
         a = 1 + 1
-
-    def _log_servo_health(self):
-        """Throttled (~``health_log_period`` s) servo health read + log across BOTH boards.
-
-        Reads temperature / present current / hardware-error for every servo on the small
-        AND big boards (via ``self._drivers()``), so id2/id4 on the big board show up next
-        to the small-board servos. Watch ``T`` climb and ``I`` sit near its limit, and get
-        a loud ERROR the moment a servo latches a Hardware Error (OVERLOAD/OVERHEAT/...) or
-        disables its own torque -- e.g. the elbow (id4) silently dropping gravity comp. On
-        such a latch the servo stays limp until a reboot/power-cycle.
-
-        Purely additive telemetry: it does NOT touch the control/torque path. read_health()
-        issues per-servo register reads, so it briefly stalls the loop (the servos hold
-        their last goal current across the gap). Set health_log_period=0 to disable.
-        """
-        if not self.health_log_period:
-            return
-        now = time.time()
-        if now - self._last_health_log < self.health_log_period:
-            return
-        self._last_health_log = now
-
-        health = []
-        for driver in self._drivers():
-            try:
-                health.extend(driver.read_health())
-            except Exception as e:
-                self.get_logger().warning(f"[health] read failed: {e}")
-                return
-        health.sort(key=lambda h: h["id"])   # ascending id so id2/id4 line up with the rest
-
-        lines = ["[health] err(70) pwm(124) I(126) vel(128) pos(132) postraj(140) Vin(144) T(146):"]
-        for h in health:
-            vin = f"{h['input_voltage'] / 10:.1f}" if h["input_voltage"] is not None else "?"
-            lines.append(
-                f"  id{h['id']} err={h['hw_error_flags'] or 'OK'} te={h['torque_enable']}"
-                f" pwm={h['present_pwm']} I={h['present_current']}/{h['current_limit']}"
-                f" vel={h['present_velocity']} pos={h['present_position']}"
-                f" postraj={h['position_trajectory']} Vin={vin}V T={h['temperature']}C"
-            )
-        self.get_logger().info("\n".join(lines))
-
-        for h in health:
-            if h["hw_error"]:
-                self.get_logger().error(
-                    f"[health] servo id{h['id']} HARDWARE ERROR {h['hw_error_flags']} "
-                    f"(0x{h['hw_error']:02x}) T={h['temperature']}C I={h['present_current']} "
-                    f"-- torque has latched OFF; reboot/power-cycle the servo to clear"
-                )
-            elif h["torque_enable"] == 0:
-                self.get_logger().error(
-                    f"[health] servo id{h['id']} has torque DISABLED (likely a protective "
-                    f"shutdown) T={h['temperature']}C I={h['present_current']}"
-                )
-
-
-    # def _log_servo_health(self):
-    #     """Throttled (~``health_log_period`` s) servo health read + log.
-
-    #     Diagnoses torque dropouts such as the base joint silently losing gravity comp:
-    #     watch ``T`` (temperature) climb over the minute and ``I`` (present current) sit
-    #     pegged near its limit, and get an explicit ERROR the moment a servo latches a
-    #     Hardware Error (OVERLOAD/OVERHEAT/...) or disables its own torque. On such a
-    #     latch FACTR_Teleop/src/factr_teleop/factr_teleop/factr_rizarm_joint_limits_max: [4.5, 4.131, 6, 6, 8, 7.77, 3.32]  
-    #     if not self.health_log_period:
-    #         return
-    #     now = tFACTR_Teleop/src/factr_teleop/factr_teleop/factr_rizon_dual_board.py- self._last_health_log < self.health_log_period:
-    #         return
-    #     self._last_health_log = now
-
-    #     try:
-    #         health = self.driver.read_health()
-    #     except Exception as e:
-    #         self.get_logger().warning(f"[health] read failed: {e}")
-    #         return
-
-    #     summary = "  ".join(
-    #         f"id{h['id']}:T={h['temperature']}C I={h['present_current']}/eturn
-
-    #     summary = "  ".join(
-    #         f"id{h['id']}:T={h['temperature']}C I={h['present_current']}/{h['current_limit']}"
-    #         for h in health{h['current_limit']}"
-    #         for h in health
-    #     )
-    #     self.get_logger().info(f"[health] {summary}")
-
-    #     for h in health:
-    #         if h["hw_error"]:
-    #             self.get_logger().error(
-    #                 f"[health] servo id{h['id']} HARDWARE ERROR {h['hw_error_flags']} "
-    #                 f"(0x{h['hw_error']:02x}) T={h['temperature']}C I={h['present_current']} "
-    #                 f"-- torque has latched OFF; reboot/power-cycle the servo to clear"
-    #             )
-    #         elif h["torque_enable"] == 0 and self.driver.torque_enabled:
-    #             self.get_logger().error(
-    #                 f"[health] servo id{h['id']} disabled its own torque while the node still "
-    #                 f"commands torque ON (likely protective shutdown) T={h['temperature']}C "
-    #                 f"I={h['present_current']}"
-    #             )
-
 
     @abstractmethod
     def set_up_communication(self):

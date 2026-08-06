@@ -4,7 +4,6 @@
 # -- ROS2 -- 
 import rclpy
 from rclpy.node import Node
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 
 # -- Message types -- 
@@ -38,16 +37,13 @@ class FactrRizonTeleopDualBoard(FACTRTeleopDualBase):
     def __init__(self, arm_index: int):
         super().__init__(arm_index)
 
-        self.group_a = MutuallyExclusiveCallbackGroup()
-        self.group_b = MutuallyExclusiveCallbackGroup()
-
-        self.joint_pos_publisher = self.publisher_ = self.create_publisher(JointState, '/joint_pos_right', 10, callback_group=self.group_a)
-
-        self.create_timer(0.002, self.publish_joint_pos, callback_group=self.group_b)
-        # publish joint_pos every 2ms
+        self.joint_pos_publisher = self.publisher_ = self.create_publisher(
+            JointState, '/joint_pos_right', 10
+        )
 
         self.index = arm_index
         self._last_published_joint_sequence = 0
+        self._initialize_position()
 
 
     def get_leader_joint_pos(self):
@@ -68,14 +64,14 @@ class FactrRizonTeleopDualBoard(FACTRTeleopDualBase):
         try:
             leader_arm_pos, leader_arm_vel, leader_gripper_pos, leader_gripper_vel = self.get_leader_joint_states()
         except DynamixelReadError as exc:
-            # A timer tick is the retry. Never spend a real-time callback making
-            # repeated serial attempts; retain the previous torque command and
-            # let the next scheduled tick acquire a new state.
+            # The next dedicated-loop iteration is the retry. Never spend one
+            # control iteration making repeated serial attempts; retain the
+            # previous torque command until a complete state is acquired.
             self.get_logger().warning(
                 f"FACTR TELEOP {self.name}: skipped control tick after {exc}",
                 throttle_duration_sec=1.0,
             )
-            return
+            return False
 
         torque_l, torque_gripper = self.joint_limit_barrier(
             leader_arm_pos, leader_arm_vel, leader_gripper_pos, leader_gripper_vel
@@ -113,8 +109,8 @@ class FactrRizonTeleopDualBoard(FACTRTeleopDualBase):
             torque_gravity, torque_friction, torque_feedback, torque_arm, grav_gain,
         )
         self.set_leader_joint_torque(torque_arm, torque_gripper)
-
-        self._log_servo_health()
+        self.publish_joint_pos()
+        return True
 
 
     def publish_joint_pos(self):
@@ -123,7 +119,17 @@ class FactrRizonTeleopDualBoard(FACTRTeleopDualBase):
             return
 
         msg = JointState()
-        msg.header.stamp = self.get_clock().now().to_msg()
+        # Preserve when the merged Dynamixel acquisition completed, not when this
+        # 2 ms publisher timer happened to observe it. Convert the monotonic cache
+        # age to the ROS wall clock so the API/client can measure end-to-end age.
+        now_monotonic_ns = time.monotonic_ns()
+        now_ros_ns = self.get_clock().now().nanoseconds
+        source_ros_ns = max(
+            0,
+            now_ros_ns - max(0, now_monotonic_ns - state.stamp_monotonic_ns),
+        )
+        msg.header.stamp.sec = int(source_ros_ns // 1_000_000_000)
+        msg.header.stamp.nanosec = int(source_ros_ns % 1_000_000_000)
         msg.name = [f'joint_{i}' for i in range(7)]
 
         positions = state.position.tolist()
@@ -167,7 +173,10 @@ def main(args=None):
     rclpy.init(args=args)
     right_factr = FactrRizonTeleopDualBoard(1)
 
-    executor = MultiThreadedExecutor() # mutli thread needed
+    # Serial I/O and torque control have their own thread. Two ROS workers are
+    # sufficient for the always-on force-feedback subscription and telemetry/gain
+    # callbacks, without the 48-worker GIL contention of the default constructor.
+    executor = MultiThreadedExecutor(num_threads=2)
     executor.add_node(right_factr)
     try:
         executor.spin()
