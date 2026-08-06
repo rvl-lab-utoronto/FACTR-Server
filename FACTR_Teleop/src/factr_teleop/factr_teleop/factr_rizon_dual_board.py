@@ -117,19 +117,6 @@ class FactrRizonTeleopDualBoard(FACTRTeleopDualBase):
 
         if len(positions) > 8:
             self.get_logger().info("motors not ready")
-        else:   
-            # for testing
-            print("\033[H\033[2J", end="")
-
-            # TODO change the size to 7 after big servos are added
-
-            for i in range(7):
-                print(f"A{i+1} right: {(positions[i])}")
-            print(f"G1 right: {(positions[-1])}")
-
-            # for i in range(7):
-            #     print(f"A{i+1} right: {rad_to_deg_signed(positions[i])}")
-            # print(f"G1 right: {rad_to_deg_signed(positions[-1])}")
 
         self.joint_pos_publisher.publish(msg)
 
@@ -158,9 +145,6 @@ async def web_server(websocket):
 def main(args=None):
     # before running this file, goto factr_rizon_left.yaml and factr_rizon_right.yaml
     # change dynamixel_port: "xxxx_xxx" to your USB port!
-
-    # print("modify your USB port first!") 
-    # return # if you have done so, comment this line!
 
     # index 0 is left, 1 is right
     rclpy.init(args=args)

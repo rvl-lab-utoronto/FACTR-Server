@@ -38,7 +38,6 @@ def find_ttyusb(port_name):
         resolved_path = os.readlink(full_path)
         actual_device = os.path.basename(resolved_path)
         if actual_device.startswith("ttyUSB"):
-            print("FOUND DEVICE!")
             return actual_device
         else:
             raise Exception(
@@ -74,8 +73,6 @@ class FACTRTeleopDualBase(Node, ABC):
             config_file_name = self.declare_parameter('config_file', 'factr_rizon_left.yaml').get_parameter_value().string_value
         else:
             # right arm
-            print("TRUE")
-            
             config_file_name = self.declare_parameter('config_file', 'factr_rizon_right.yaml').get_parameter_value().string_value
 
         config_path = os.path.join(get_workspace_root(), f"src/factr_teleop/factr_teleop/configs/{config_file_name}")
@@ -84,7 +81,6 @@ class FACTRTeleopDualBase(Node, ABC):
         
         self.name = self.config["name"]
         self.side = "left" if arm_index == 0 else "right"
-        print(self.name)
         self.dt = 1 / self.config["controller"]["frequency"]
         
         self._prepare_dynamixel()
@@ -452,7 +448,6 @@ class FACTRTeleopDualBase(Node, ABC):
             current_joint_error = np.linalg.norm(
                 curr_pos - self.initial_match_joint_pos[0:self.num_arm_joints]
             )
-            print("current joint pos: ", [f"{x:.3f}" for x in curr_pos])
             self.get_logger().info(
                 f"FACTR TELEOP {self.name}: Please match starting joint pos. Current error: {current_joint_error}"
             )
@@ -486,7 +481,6 @@ class FACTRTeleopDualBase(Node, ABC):
         self.gripper_pos = (joint_pos[-1] - self.joint_offsets[-1]) * self.joint_signs[-1]
         
         gripper_vel = (self.gripper_pos - self.gripper_pos_prev) / self.dt
-        print(joint_pos_arm, joint_vel_arm)
         return joint_pos_arm, joint_vel_arm, self.gripper_pos, gripper_vel
 
     def get_cached_raw_joint_state(self):

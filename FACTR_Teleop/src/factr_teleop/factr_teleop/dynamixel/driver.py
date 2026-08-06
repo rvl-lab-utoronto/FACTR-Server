@@ -243,8 +243,8 @@ class DynamixelDriver(DynamixelDriverProtocol):
         self._torque_enabled = False
         try:
             self.set_torque_mode(self._torque_enabled)
-        except Exception as e:
-            print(f"port: {port}, {e}")
+        except Exception:
+            pass
 
     @property
     def torque_enabled(self) -> bool:
@@ -651,7 +651,6 @@ def main():
     try:
         driver = DynamixelDriver(ids, port=port, baudrate=4000000)
     except FileNotFoundError:
-        print(f"Port {port} not found. Please check the connection.")
         return
     
     driver.set_operating_mode(0)
@@ -660,7 +659,6 @@ def main():
     try:
         while True:
             positions = driver.get_positions()
-            print(f"Current joint positions for IDs {ids}: {positions}")
 
             current_values = [0, 0, 0, 0, 0, 0, 0.0]
             driver.set_current(current_values)
