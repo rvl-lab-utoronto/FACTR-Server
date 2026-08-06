@@ -10,7 +10,6 @@ dynamixel:
     "XC330_T288_T", "XM430_W210_T", "XC330_T288_T", "XM430_W210_T", 
     "XC330_T288_T", "XC330_T288_T", "XC330_T288_T", "XC330_T288_T",
   ]
-  joint_signs: [1, 1, 1, 1, 1, -1, -1, 1]
 
 arm_teleop:
   # URDF used for creating leader arm dynamics model to compute gravity compensation
@@ -25,6 +24,8 @@ arm_teleop:
     # target; FACTR derives every zero offset from that capture at launch.
     model_home_q_rad: [0.0, 0.0, 0.0, 1.57, 0.0, 0.0, 0.0]
 gripper_teleop:
+  # FACTR owns only the gripper's hardware direction; DFC owns all arm signs.
+  hardware_sign: 1
   # The maximum range (in rad) of the leader gripper trigger
   actuation_range: 0.8
 
@@ -38,7 +39,7 @@ controller:
     # Capability is on for both leaders; the API relay's runtime gate defaults
     # off and is controlled by /enable_force_feedback_left.
     enable: True
-    gain: 1.5
+    gain: 3.0
     damping: 0.0
     motor_scalar: 94.5652173913
     # Staleness cutoff [s] and per-joint clip [Nm] for the follower external-torque
@@ -54,7 +55,7 @@ controller:
     enable: True
     # Physical gravity-compensation strength; the runtime grav-comp activation
     # ramp above is independent of force feedback.
-    gain: 0.65
+    gain: 0.8
   null_space_regulation:
     enable: false
     null_space_joint_target: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] # TODO: edit this to home pose of follower arm
@@ -62,7 +63,7 @@ controller:
     kd: 0.01
   static_friction_comp:
     enable_speed: 0.9
-    gain: 0.2
+    gain: 0.6
   joint_limit_barrier:
     # Disabled: no leader-side end-stop repulsion (no follower-range protection from FACTR).
     enable: false

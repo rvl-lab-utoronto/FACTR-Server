@@ -254,6 +254,7 @@ def _relay(side="left"):
         side=side,
         lock=threading.Lock(),
         joint_pos=[0.0, 1.0, 2.0],
+        joint_pos_source_stamp_ns=123,
         telemetry={},
         telemetry_version=0,
         grav_comp_gain=0.0,
@@ -332,6 +333,7 @@ def test_stream_sends_telemetry_then_reading():
         "type": "reading",
         "side": "left",
         "joint_pos": [0.0, 1.0, 2.0],
+        "source_stamp_ns": 123,
     }
 
 

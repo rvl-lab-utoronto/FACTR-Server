@@ -23,17 +23,22 @@ class LeaderModelConfig:
     joint_offsets_rad: np.ndarray
 
     def model_state(self, raw_q, raw_dq):
-        """Convert raw Dynamixel state using FACTR's native mechanism signs."""
+        """Convert raw Dynamixel state using DFC's authoritative arm signs."""
         raw_q = np.asarray(raw_q, dtype=float)
         raw_dq = np.asarray(raw_dq, dtype=float)
         q_factr = self.model_signs * (raw_q - self.joint_offsets_rad)
         dq_factr = self.model_signs * raw_dq
         return q_factr, dq_factr
 
+    def motor_signs(self, gripper_sign):
+        """Return model-torque-to-motor signs for arm joints plus gripper."""
+        gripper_sign = float(gripper_sign)
+        if not np.isfinite(gripper_sign) or gripper_sign not in (-1.0, 1.0):
+            raise RuntimeError("FACTR gripper hardware sign must be -1 or +1")
+        return np.append(self.model_signs, gripper_sign)
 
-def load_leader_model(
-    expected_side, dof, physical_model_signs, model_home_q_rad, environ=None
-):
+
+def load_leader_model(expected_side, dof, model_home_q_rad, environ=None):
     """Parse DFC's measured contract and derive FACTR model calibration.
 
     ``model_home_q_rad`` is owned by FACTR's mechanism configuration. The affine
@@ -83,19 +88,11 @@ def load_leader_model(
     if not np.isfinite([gripper_open, gripper_closed]).all() or gripper_open == gripper_closed:
         raise RuntimeError("invalid DFC gripper calibration")
 
-    physical_model_signs = np.asarray(physical_model_signs, dtype=float)[:dof]
-    if physical_model_signs.shape != (dof,) or not np.all(
-        np.isin(physical_model_signs, (-1.0, 1.0))
-    ):
-        raise RuntimeError(
-            "FACTR mechanism signs must contain one -1 or +1 per arm joint"
-        )
-
     transform_offset = home_factr - transform_signs * home_dfc
     home_raw = raw_signs * home_dfc - offsets
-    # FACTR owns the mechanism signs; DFC supplies the captured physical home.
-    # q_model = model_signs * (q_raw - joint_offsets).
-    model_signs = physical_model_signs
+    # DFC owns both sign stages. Their product is the raw Dynamixel -> FACTR-model
+    # slope used by state conversion and by the inverse torque conversion.
+    model_signs = raw_signs * transform_signs
     joint_offsets = home_raw - home_factr / model_signs
     return LeaderModelConfig(
         side=side,

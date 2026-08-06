@@ -52,6 +52,7 @@ class FactrRizonTeleop(FACTRTeleop):
         # publish joint_pos every 2ms
 
         self.index = arm_index
+        self._last_published_joint_sequence = 0
 
 
     def get_leader_joint_pos(self):
@@ -72,11 +73,25 @@ class FactrRizonTeleop(FACTRTeleop):
 
 
     def publish_joint_pos(self):
+        state = self.get_cached_raw_joint_state()
+        if state.sequence <= self._last_published_joint_sequence:
+            return
+
         msg = JointState()
-        msg.header.stamp = self.get_clock().now().to_msg()
+        # Preserve when the Dynamixel acquisition completed, not when this
+        # publisher timer happened to observe it. Convert the monotonic cache
+        # age to the ROS wall clock so downstream consumers can measure age.
+        now_monotonic_ns = time.monotonic_ns()
+        now_ros_ns = self.get_clock().now().nanoseconds
+        source_ros_ns = max(
+            0,
+            now_ros_ns - max(0, now_monotonic_ns - state.stamp_monotonic_ns),
+        )
+        msg.header.stamp.sec = int(source_ros_ns // 1_000_000_000)
+        msg.header.stamp.nanosec = int(source_ros_ns % 1_000_000_000)
         msg.name = [f'joint_{i}' for i in range(7)]
 
-        positions = self.get_leader_joint_pos().tolist()
+        positions = state.position.tolist()
         msg.position = positions
 
         msg.velocity = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] 
@@ -93,6 +108,7 @@ class FactrRizonTeleop(FACTRTeleop):
             self.get_logger().info(f"{arm_name}: {readout}", throttle_duration_sec=0.5)
 
         self.joint_pos_publisher.publish(msg)
+        self._last_published_joint_sequence = state.sequence
 
 
     def set_up_communication(self):

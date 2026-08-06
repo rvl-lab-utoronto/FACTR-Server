@@ -2,10 +2,8 @@
 #
 # Reads the leader arm's DYNAMIXEL servos and publishes CALIBRATED joint positions on
 # /joint_pos_{side} — WITHOUT enabling torque, so the arm stays fully backdrivable
-# (move it by hand during data collection). It reuses FACTR's calibration (joint_signs
-# + a per-joint offset that aligns the startup pose to the config's
-# calibration_joint_pos) so the published values match what full teleop would publish;
-# the factr_api server then relays them over HTTP.
+# (move it by hand during data collection). It publishes raw hardware state; managed
+# teleop receives its arm calibration and directions from DFC instead.
 #
 # Launch once per leader arm (arm_index selects side + config, like factr_api):
 #   ros2 run factr_teleop factr_joint_pub --ros-args -p arm_index:=0   # left
@@ -54,7 +52,6 @@ class FactrJointPublisher(Node):
         # ---- driver init: torque stays OFF, arm backdrivable ----
         self.servo_types = self.config["dynamixel"]["servo_types"]
         self.num_motors = len(self.servo_types)
-        self.joint_signs = np.array(self.config["dynamixel"]["joint_signs"], dtype=float)
         self.dynamixel_port = "/dev/serial/by-id/" + self.config["dynamixel"]["dynamixel_port"]
 
         # FTDI latency timer must be 1 ms to sustain the read rate (default 16 ms ~ 60 Hz).

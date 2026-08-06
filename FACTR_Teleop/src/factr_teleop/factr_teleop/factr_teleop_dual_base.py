@@ -85,7 +85,6 @@ class FACTRTeleopDualBase(Node, ABC):
         
         self._prepare_dynamixel()
         self._raw_joint_state_cache = RawJointStateCache(self.num_motors)
-        self._model_joint_signs = self.joint_signs.copy()
         self._prepare_inverse_dynamics()
 
         # Reading from /configs/franka_example.yaml
@@ -102,9 +101,9 @@ class FACTRTeleopDualBase(Node, ABC):
         self._leader_model = load_leader_model(
             self.side,
             self.num_arm_joints,
-            self._model_joint_signs,
             self.initial_match_joint_pos,
         )
+        self._motor_joint_signs = self._leader_model.motor_signs(self.gripper_sign)
         self.calibration_joint_pos = self._leader_model.home_factr_q_rad.copy()
         assert self.num_arm_joints == len(self.arm_joint_limits_max) == len(self.arm_joint_limits_min), \
             "num_arm_joints and the length of arm joint limits must be the same"
@@ -264,10 +263,9 @@ class FACTRTeleopDualBase(Node, ABC):
         Instantiates the Dynamixel drivers for the small and big power boards.
 
         Each board is described by its own config section (``dynamixel_small`` and,
-        optionally, ``dynamixel_big``) listing that board's Dynamixel ``ids``,
-        ``servo_types`` and ``joint_signs`` in id order. The two boards are merged
-        into a single full-arm ordering (ascending Dynamixel id) so the rest of the
-        controller can treat the leader arm as one contiguous set of joints.
+        optionally, ``dynamixel_big``) listing that board's Dynamixel ``ids`` and
+        ``servo_types`` in id order. The two boards are merged into a single full-arm
+        ordering (ascending Dynamixel id). Arm directions come only from DFC.
         """
         small_cfg = self.config["dynamixel_small"]
         big_cfg = self.config.get("dynamixel_big") or {}
@@ -275,22 +273,23 @@ class FACTRTeleopDualBase(Node, ABC):
         # --- per-board servo tables, each in that board's own id order ---
         self.small_servo_ids = [int(i) for i in small_cfg["ids"]]
         small_types = list(small_cfg["servo_types"])
-        small_signs = list(small_cfg["joint_signs"])
         self.dynamixel_port = "/dev/serial/by-id/" + small_cfg["dynamixel_port"]
 
         self.big_servo_ids = [int(i) for i in big_cfg.get("ids", [])]
         big_types = list(big_cfg.get("servo_types", []))
-        big_signs = list(big_cfg.get("joint_signs", []))
         self.dynamixel_port_big = (
             "/dev/serial/by-id/" + big_cfg["dynamixel_port"] if self.big_servo_ids else None
         )
+        self.gripper_sign = float(self.config["gripper_teleop"]["hardware_sign"])
+        assert self.gripper_sign in (-1.0, 1.0), \
+            "gripper_teleop.hardware_sign must be -1 or +1"
 
-        for label, ids, types, signs in (
-            ("dynamixel_small", self.small_servo_ids, small_types, small_signs),
-            ("dynamixel_big", self.big_servo_ids, big_types, big_signs),
+        for label, ids, types in (
+            ("dynamixel_small", self.small_servo_ids, small_types),
+            ("dynamixel_big", self.big_servo_ids, big_types),
         ):
-            assert len(ids) == len(types) == len(signs), \
-                f"{label}: ids, servo_types and joint_signs must have equal length"
+            assert len(ids) == len(types), \
+                f"{label}: ids and servo_types must have equal length"
 
         # --- merge both boards into one full-arm ordering (ascending Dynamixel id) ---
         all_ids = sorted(self.small_servo_ids + self.big_servo_ids)
@@ -299,14 +298,11 @@ class FACTRTeleopDualBase(Node, ABC):
 
         self.num_motors = len(all_ids)
         self.servo_types = [None] * self.num_motors
-        self.joint_signs = np.zeros(self.num_motors)
-        for sid, stype, ssign in zip(
+        for sid, stype in zip(
             self.small_servo_ids + self.big_servo_ids,
             small_types + big_types,
-            small_signs + big_signs,
         ):
             self.servo_types[id_to_index[sid]] = stype
-            self.joint_signs[id_to_index[sid]] = ssign
 
         # merged-array positions of each board's servos, kept in that board's id
         # order so they line up with what the driver reads/writes for those ids.
@@ -495,7 +491,7 @@ class FACTRTeleopDualBase(Node, ABC):
             raw_q, joint_vel[0:self.num_arm_joints]
         )
         self._last_raw_arm_q = raw_q
-        self.gripper_pos = (joint_pos[-1] - self.joint_offsets[-1]) * self.joint_signs[-1]
+        self.gripper_pos = (joint_pos[-1] - self.joint_offsets[-1]) * self.gripper_sign
         
         gripper_vel = (self.gripper_pos - self.gripper_pos_prev) / self.dt
         return joint_pos_arm, joint_vel_arm, self.gripper_pos, gripper_vel
@@ -540,18 +536,18 @@ class FACTRTeleopDualBase(Node, ABC):
         Applies torque to the leader arm and gripper.
 this is not what I want to 
         The full command (arm joints followed by the gripper, in merged arm order) is
-        split across the small and big boards and converted back to each servo's
-        physical direction using the configured joint_signs.
+        split across the small and big boards. DFC's arm signs convert model torque
+        back to motor torque; FACTR contributes only the gripper hardware sign.
         """
         arm_gripper_torque = np.append(arm_torque, gripper_torque)
 
         small_torque = arm_gripper_torque[self.small_servo_indices]
-        small_signs = self.joint_signs[self.small_servo_indices]
+        small_signs = self._motor_joint_signs[self.small_servo_indices]
         self.driver_small.set_torque(small_torque * small_signs)
 
         if self.big_servo_ids:
             big_torque = arm_gripper_torque[self.big_servo_indices]
-            big_signs = self.joint_signs[self.big_servo_indices]
+            big_signs = self._motor_joint_signs[self.big_servo_indices]
             self.driver_big.set_torque(big_torque * big_signs)
 
     def joint_limit_barrier(self, arm_joint_pos, arm_joint_vel, gripper_joint_pos, gripper_joint_vel):

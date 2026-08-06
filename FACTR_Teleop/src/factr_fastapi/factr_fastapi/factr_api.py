@@ -161,6 +161,7 @@ class FactrAPI(Node):
         self.disable_force_feedback_route = f"/disable_force_feedback_{self.side}"
 
         self.joint_pos: list[float] = list(_DEFAULT_JOINT_POS)
+        self.joint_pos_source_stamp_ns: int = 0
         #: Last targets this relay commanded and the independent live gains reported
         #: by the teleop.
         self.grav_comp_gain_target: float = 0.0
@@ -287,6 +288,7 @@ class FactrAPI(Node):
             while True:
                 with self.lock:
                     joint_pos = list(self.joint_pos)
+                    source_stamp_ns = self.joint_pos_source_stamp_ns
                     telemetry = dict(self.telemetry)
                     telemetry_version = self.telemetry_version
 
@@ -299,6 +301,7 @@ class FactrAPI(Node):
                     "type": "reading",
                     "side": self.side,
                     "joint_pos": joint_pos,
+                    "source_stamp_ns": source_stamp_ns,
                 })
                 await asyncio.sleep(period_s)
         except (WebSocketDisconnect, OSError, RuntimeError):
@@ -411,6 +414,10 @@ class FactrAPI(Node):
     def _update_joint_pos(self, msg: JointState) -> None:
         with self.lock:
             self.joint_pos = list(msg.position)
+            self.joint_pos_source_stamp_ns = (
+                int(msg.header.stamp.sec) * 1_000_000_000
+                + int(msg.header.stamp.nanosec)
+            )
 
     def _update_grav_comp_gain_state(self, msg: Float64) -> None:
         with self.lock:

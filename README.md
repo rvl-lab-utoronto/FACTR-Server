@@ -11,16 +11,18 @@ There are three deliberately separate representations of a leader pose:
   training. DFC converts each raw FACTR sample once when it receives the sample, publishes
   it as `factr/<side>`, and stores it as `observation.factr.<side>`.
 - **FACTR model** is used only inside FACTR for gravity compensation and other leader-side
-  dynamics. It follows the FACTR mechanism and URDF, not the Rizon joint convention.
+  dynamics. Its arm-axis directions are derived from DFC's two sign stages.
 
 DFC's `conf/factr/*.yaml` is the measured-calibration source. Each `leaders.<side>`
 object stores the raw Dynamixel→DFC convention, canonical DFC home, and DFC→FACTR
 axis signs. The DFC supervisor injects that object into the managed teleop at launch.
-FACTR's hardware YAML owns the mechanism/URDF signs and the single authoritative
-`model_home_q_rad`; FACTR derives both the affine DFC→FACTR offset and its native
-Dynamixel model offsets at launch. No derived offset is persisted or accepted in the
-DFC contract. DFC straight-up home is `[0,0,0,0,0,0,0]`; the corresponding FACTR
-model reference is `[0,0,0,1.57,0,0,0]`.
+DFC owns every arm-joint direction: FACTR composes `raw_to_dfc` and `dfc_to_factr`
+signs for both model-state conversion and motor-torque conversion. FACTR's hardware
+YAML owns only the gripper hardware sign and the authoritative `model_home_q_rad`.
+FACTR derives both the affine DFC→FACTR offset and its native Dynamixel model offsets
+at launch. No derived offset is persisted or accepted in the DFC contract. DFC
+straight-up home is `[0,0,0,0,0,0,0]`; the corresponding FACTR model reference is
+`[0,0,0,1.57,0,0,0]`.
 The leader may start in any pose. No launch-pose calibration occurs.
 
 ## Live telemetry

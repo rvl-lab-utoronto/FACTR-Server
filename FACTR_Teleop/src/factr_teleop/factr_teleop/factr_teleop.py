@@ -35,7 +35,7 @@ from .angles import periodic_joint_error
 from .gain_control import compose_arm_torque, ramp_gain
 from .leader_config import load_leader_model
 from .raw_joint_state import RawJointStateCache
-from factr_teleop.dynamixel.driver import DynamixelDriver
+from .dynamixel.driver import DynamixelDriver, DynamixelReadError
 
 
 def find_ttyusb(port_name):
@@ -96,10 +96,6 @@ class FACTRTeleop(Node, ABC):
         
         self._prepare_dynamixel()
         self._raw_joint_state_cache = RawJointStateCache(self.num_motors)
-        # Fixed motor/model directions belong to the FACTR mechanism and URDF.  They are
-        # not DFC follower-convention sign flips and must never be overwritten by a
-        # calibration push.
-        self._model_joint_signs = self.joint_signs.copy()
         self._prepare_inverse_dynamics()
 
         # Reading from /configs/franka_example.yaml
@@ -116,9 +112,9 @@ class FACTRTeleop(Node, ABC):
         self._leader_model = load_leader_model(
             self.side,
             self.num_arm_joints,
-            self._model_joint_signs,
             self.initial_match_joint_pos,
         )
+        self._motor_joint_signs = self._leader_model.motor_signs(self.gripper_sign)
         self.calibration_joint_pos = self._leader_model.home_factr_q_rad.copy()
         assert self.num_arm_joints == len(self.arm_joint_limits_max) == len(self.arm_joint_limits_min), \
             "num_arm_joints and the length of arm joint limits must be the same"
@@ -262,9 +258,12 @@ class FACTRTeleop(Node, ABC):
         """
         self.servo_types = self.config["dynamixel"]["servo_types"]
         self.num_motors = len(self.servo_types)
-        self.joint_signs = np.array(self.config["dynamixel"]["joint_signs"], dtype=float)
-        assert self.num_motors == len(self.joint_signs), \
-            "The number of motors and the number of joint signs must be the same"
+        legacy_signs = self.config["dynamixel"].get("joint_signs", [1.0])
+        self.gripper_sign = float(
+            self.config["gripper_teleop"].get("hardware_sign", legacy_signs[-1])
+        )
+        assert self.gripper_sign in (-1.0, 1.0), \
+            "gripper_teleop.hardware_sign must be -1 or +1"
         self.dynamixel_port = "/dev/serial/by-id/" + self.config["dynamixel"]["dynamixel_port"]
 
         # checks of the latency timer on ttyUSB of the corresponding port is 1
@@ -323,10 +322,26 @@ class FACTRTeleop(Node, ABC):
         The current pose is sampled only for startup audit telemetry; it never
         changes calibration.
         """
-        # Warm up serial reads before auditing the DFC-provided model mapping.
-        for _ in range(10):
-            self.driver.get_positions_and_velocities()
-        curr_joints, curr_vel = self.driver.get_positions_and_velocities()
+        # Every acquisition still gets exactly one serial attempt. Startup has
+        # no timer yet, so a missed attempt is ignored here and a separate one
+        # begins after ``dt`` until enough complete samples arrive.
+        startup_deadline = time.monotonic() + 5.0
+        successful_samples = 0
+        curr_joints = curr_vel = None
+        while successful_samples < 11:
+            try:
+                curr_joints, curr_vel = self.driver.get_positions_and_velocities(
+                    source="startup"
+                )
+            except DynamixelReadError as exc:
+                if time.monotonic() >= startup_deadline:
+                    raise DynamixelReadError(
+                        "Dynamixel startup did not produce 11 complete samples "
+                        "within 5 seconds"
+                    ) from exc
+                time.sleep(self.dt)
+                continue
+            successful_samples += 1
         self._raw_joint_state_cache.update(curr_joints, curr_vel)
 
         self.joint_offsets = np.concatenate([
@@ -388,7 +403,7 @@ class FACTRTeleop(Node, ABC):
             raw_q, joint_vel[0:self.num_arm_joints]
         )
         self._last_raw_arm_q = raw_q
-        self.gripper_pos = (joint_pos[-1] - self.joint_offsets[-1]) * self.joint_signs[-1]
+        self.gripper_pos = (joint_pos[-1] - self.joint_offsets[-1]) * self.gripper_sign
         
         gripper_vel = (self.gripper_pos - self.gripper_pos_prev) / self.dt
         return joint_pos_arm, joint_vel_arm, self.gripper_pos, gripper_vel
@@ -432,7 +447,7 @@ class FACTRTeleop(Node, ABC):
         Applies torque to the leader arm and gripper.
         """
         arm_gripper_torque = np.append(arm_torque, gripper_torque)
-        self.driver.set_torque(arm_gripper_torque*self.joint_signs)
+        self.driver.set_torque(arm_gripper_torque * self._motor_joint_signs)
 
 
     def joint_limit_barrier(self, arm_joint_pos, arm_joint_vel, gripper_joint_pos, gripper_joint_vel):
@@ -667,7 +682,17 @@ class FACTRTeleop(Node, ABC):
         support a 500 Hz control frequency, ensure that the Baud Rate is set to 4 Mbps 
         and the Return Delay Time is set to 0 using the Dynamixel Wizard software.
         """
-        leader_arm_pos, leader_arm_vel, leader_gripper_pos, leader_gripper_vel = self.get_leader_joint_states()
+        try:
+            leader_arm_pos, leader_arm_vel, leader_gripper_pos, leader_gripper_vel = self.get_leader_joint_states()
+        except DynamixelReadError as exc:
+            # A timer tick is the retry. Never spend a real-time callback making
+            # repeated serial attempts; retain the previous torque command and
+            # let the next scheduled tick acquire a new state.
+            self.get_logger().warning(
+                f"FACTR TELEOP {self.name}: skipped control tick after {exc}",
+                throttle_duration_sec=1.0,
+            )
+            return
 
         torque_l, torque_gripper = self.joint_limit_barrier(
             leader_arm_pos, leader_arm_vel, leader_gripper_pos, leader_gripper_vel
