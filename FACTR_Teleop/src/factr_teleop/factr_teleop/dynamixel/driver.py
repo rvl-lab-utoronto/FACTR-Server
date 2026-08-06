@@ -20,6 +20,9 @@
 # ---------------------------------------------------------------------------
 
 
+import copy
+import time
+from collections import deque
 from threading import Lock
 from typing import Protocol, Sequence
 
@@ -29,6 +32,8 @@ from dynamixel_sdk.group_sync_write import GroupSyncWrite
 from dynamixel_sdk.packet_handler import PacketHandler
 from dynamixel_sdk.port_handler import PortHandler
 from dynamixel_sdk.robotis_def import (
+    COMM_NOT_AVAILABLE,
+    COMM_RX_FAIL,
     COMM_SUCCESS,
     DXL_HIBYTE,
     DXL_HIWORD,
@@ -51,9 +56,17 @@ ADDR_OPERATING_MODE = 11
 CURRENT_CONTROL_MODE = 0
 POSITION_CONTROL_MODE = 3
 
+# A change this large between adjacent bus reads cannot be physical on the leader
+# mechanism (the two reads are normally ~1 ms apart). It is recorded, not filtered:
+# control behavior remains unchanged while Rerun gets the exact before/after ticks.
+POSITION_JUMP_THRESHOLD_RAD = 0.5
+DIAGNOSTIC_EVENT_HISTORY = 32
+EVENT_HEALTH_SNAPSHOT_COOLDOWN_S = 1.0
+
 # Health/diagnostics registers (X-series control table; same for XC330 and XM430).
 ADDR_CURRENT_LIMIT = 38            # 2 bytes, EEPROM (constant)
 ADDR_HARDWARE_ERROR_STATUS = 70    # 1 byte; latched fault bits, cleared only by reboot/power-cycle
+ADDR_REALTIME_TICK = 120            # 2 bytes, 1 ms tick, wraps every 32.768 s
 ADDR_PRESENT_PWM = 124             # 2 bytes, signed
 ADDR_PRESENT_CURRENT = 126         # 2 bytes, signed
 # ADDR_PRESENT_VELOCITY = 128 (4B signed), ADDR_PRESENT_POSITION = 132 (4B signed) defined above
@@ -63,10 +76,10 @@ ADDR_PRESENT_TEMPERATURE = 146     # 1 byte, deg C
 
 # Contiguous RAM blocks for batched GroupSyncRead health telemetry: two bus transactions
 # for ALL servos instead of ~N individual reads per servo -> cheap enough for ~10 Hz.
-# Block B spans PWM(124)..Temperature(146), so one read covers pwm / current / velocity /
-# position / position-trajectory / input-voltage / temperature.
+# Block B spans Realtime Tick(120)..Temperature(146), so one read covers the reboot
+# clue plus pwm / current / velocity / position / trajectory / voltage / temperature.
 LEN_HEALTH_BLOCK_A = ADDR_HARDWARE_ERROR_STATUS - ADDR_TORQUE_ENABLE + 1   # 64..70: torque_enable + hw_error
-LEN_HEALTH_BLOCK_B = ADDR_PRESENT_TEMPERATURE - ADDR_PRESENT_PWM + 1       # 124..146
+LEN_HEALTH_BLOCK_B = ADDR_PRESENT_TEMPERATURE - ADDR_REALTIME_TICK + 1     # 120..146
 
 
 def _signed(value, byte_len):
@@ -91,6 +104,41 @@ def hw_error_flags(bits):
     if not bits:
         return []
     return [name for bit, name in HW_ERROR_BITS if bits & bit]
+
+
+class DiagnosticGroupSyncRead(GroupSyncRead):
+    """GroupSyncRead that retains each servo status packet's error byte.
+
+    The upstream SDK discards this byte in ``GroupSyncRead.rxPacket``. Protocol
+    2.0 uses bit 7 as the Hardware Error alert, so retaining it lets the normal
+    position read trigger diagnostics without another periodic bus transaction.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.error_dict = {}
+
+    def rxPacket(self):
+        self.last_result = False
+        self.error_dict = {}
+        if self.ph.getProtocolVersion() == 1.0:
+            return COMM_NOT_AVAILABLE
+        if not self.data_dict:
+            return COMM_NOT_AVAILABLE
+
+        result = COMM_RX_FAIL
+        for dxl_id in self.data_dict:
+            data, result, error = self.ph.readRx(
+                self.port, dxl_id, self.data_length
+            )
+            if result != COMM_SUCCESS:
+                return result
+            self.data_dict[dxl_id] = data
+            self.error_dict[dxl_id] = int(error)
+
+        self.last_result = True
+        return result
+
 
 TORQUE_TO_CURRENT_MAPPING = {
     "XC330_T288_T": 1158.73,
@@ -139,14 +187,29 @@ class DynamixelDriverProtocol(Protocol):
 
 class DynamixelDriver(DynamixelDriverProtocol):
     def __init__(self, ids: Sequence[int], servo_types: Sequence[str], port: str = "/dev/ttyUSB0", baudrate: int = 4000000):
-        self._ids = ids
+        self._ids = list(ids)
+        self._port = port
         self._positions = None
         self._lock = Lock()
+        self._diagnostics_lock = Lock()
         self._current_limit_cache = None   # lazily filled by read_health() (EEPROM, constant)
+        self._diagnostic_session = time.monotonic_ns()
+        self._read_sequence = 0
+        self._event_sequence = 0
+        self._comm_retry_count = 0
+        self._comm_failure_count = 0
+        self._status_alert_count = 0
+        self._position_jump_count = 0
+        self._last_position_ticks = None
+        self._last_status_errors = {}
+        self._latest_reads = {}
+        self._diagnostic_events = deque(maxlen=DIAGNOSTIC_EVENT_HISTORY)
+        self._last_event_health_at = 0.0
+        self._last_event_health = []
 
         self._portHandler = PortHandler(port)
         self._packetHandler = PacketHandler(2.0)
-        self._groupSyncRead = GroupSyncRead(
+        self._groupSyncRead = DiagnosticGroupSyncRead(
             self._portHandler, self._packetHandler, ADDR_PRESENT_VELOCITY, LEN_PRESENT_POSITION + LEN_PRESENT_VELOCITY,
         )
         self._groupSyncWrite = GroupSyncWrite(
@@ -167,7 +230,7 @@ class DynamixelDriver(DynamixelDriverProtocol):
             self._portHandler, self._packetHandler, ADDR_TORQUE_ENABLE, LEN_HEALTH_BLOCK_A
         )
         self._healthReadB = GroupSyncRead(
-            self._portHandler, self._packetHandler, ADDR_PRESENT_PWM, LEN_HEALTH_BLOCK_B
+            self._portHandler, self._packetHandler, ADDR_REALTIME_TICK, LEN_HEALTH_BLOCK_B
         )
         for dxl_id in self._ids:
             self._healthReadA.addParam(dxl_id)
@@ -217,17 +280,21 @@ class DynamixelDriver(DynamixelDriverProtocol):
             if dxl_comm_result != COMM_SUCCESS or dxl_error != 0 or mode != expected_mode:
                 raise RuntimeError(f"Operating mode mismatch for Dynamixel ID {dxl_id}")
 
-    def get_positions_and_velocities(self, tries=10):
+    def get_positions_and_velocities(self, tries=10, source="unspecified"):
         _positions = np.zeros(len(self._ids), dtype=int)
         _velocities = np.zeros(len(self._ids), dtype=int)
-        
-        # perform the group sync read transaction
-        dxl_comm_result = self._groupSyncRead.txRxPacket()
-        if dxl_comm_result != COMM_SUCCESS:
-            if tries > 0:
-                return self.get_positions_and_velocities(tries-1)
-            else:
-                raise RuntimeError(f"Warning, communication failed: {dxl_comm_result}")
+
+        # Retry the normal transaction exactly as before, but retain the number and
+        # result codes instead of silently recursing. No additional bus I/O is added.
+        failed_results = []
+        for _ in range(max(0, int(tries)) + 1):
+            dxl_comm_result = self._groupSyncRead.txRxPacket()
+            if dxl_comm_result == COMM_SUCCESS:
+                break
+            failed_results.append(int(dxl_comm_result))
+        else:
+            self._record_failed_read(source, failed_results)
+            raise RuntimeError(f"Warning, communication failed: {dxl_comm_result}")
         
         for i, dxl_id in enumerate(self._ids):
             # read velocity data
@@ -252,12 +319,185 @@ class DynamixelDriver(DynamixelDriverProtocol):
             
         self._positions = _positions
         self._velocities = _velocities
+        self._record_successful_read(
+            source,
+            _positions,
+            _velocities,
+            failed_results,
+            self._groupSyncRead.error_dict,
+        )
         
         # return positions and velocities in meaningful units
         positions_in_radians = _positions / 2048.0 * np.pi
         velocities_in_units = _velocities * 0.229 * 2 * np.pi / 60
         
         return positions_in_radians, velocities_in_units
+
+    def _append_event(self, kind, stamp_monotonic_ns, details, health=None):
+        """Append one JSON-safe diagnostic event to the retained in-process ring."""
+        with self._diagnostics_lock:
+            self._event_sequence += 1
+            event = {
+                "sequence": self._event_sequence,
+                "stamp_monotonic_ns": int(stamp_monotonic_ns),
+                "kind": kind,
+                "port": self._port,
+                "session": self._diagnostic_session,
+                **details,
+            }
+            if health is not None:
+                event["health"] = health
+            self._diagnostic_events.append(event)
+
+    def _record_failed_read(self, source, failed_results):
+        stamp = time.monotonic_ns()
+        with self._diagnostics_lock:
+            self._comm_retry_count += len(failed_results)
+            self._comm_failure_count += 1
+        self._append_event(
+            "communication_failure",
+            stamp,
+            {"source": source, "result_codes": list(failed_results)},
+        )
+
+    def _record_successful_read(
+        self, source, positions, velocities, failed_results, status_errors
+    ):
+        stamp = time.monotonic_ns()
+        positions = np.asarray(positions, dtype=int)
+        velocities = np.asarray(velocities, dtype=int)
+        alerts = {
+            int(dxl_id): int(error)
+            for dxl_id, error in status_errors.items()
+            if error
+        }
+
+        with self._diagnostics_lock:
+            self._read_sequence += 1
+            read_sequence = self._read_sequence
+            self._comm_retry_count += len(failed_results)
+            previous = (
+                None if self._last_position_ticks is None
+                else self._last_position_ticks.copy()
+            )
+            previous_alerts = self._last_status_errors
+            new_alerts = {
+                dxl_id: error for dxl_id, error in alerts.items()
+                if previous_alerts.get(dxl_id) != error
+            }
+            cleared_alerts = sorted(set(previous_alerts) - set(alerts))
+            self._last_status_errors = alerts
+            self._last_position_ticks = positions.copy()
+            self._latest_reads[str(source)] = {
+                "sequence": read_sequence,
+                "stamp_monotonic_ns": stamp,
+                "raw_position_ticks": positions.tolist(),
+                "raw_velocity_ticks": velocities.tolist(),
+                "retries": len(failed_results),
+                "status_error_bytes": {
+                    str(dxl_id): int(error)
+                    for dxl_id, error in status_errors.items()
+                },
+            }
+
+        if failed_results:
+            self._append_event(
+                "communication_retry",
+                stamp,
+                {
+                    "source": source,
+                    "read_sequence": read_sequence,
+                    "result_codes": list(failed_results),
+                    "raw_position_ticks": positions.tolist(),
+                },
+            )
+
+        jump_indices = []
+        delta_rad = None
+        if previous is not None and previous.shape == positions.shape:
+            delta_rad = (positions - previous) / 2048.0 * np.pi
+            jump_indices = np.flatnonzero(
+                np.abs(delta_rad) >= POSITION_JUMP_THRESHOLD_RAD
+            ).tolist()
+
+        health = None
+        if jump_indices or new_alerts:
+            health = self._event_health_snapshot()
+
+        if jump_indices:
+            with self._diagnostics_lock:
+                self._position_jump_count += 1
+            self._append_event(
+                "position_jump",
+                stamp,
+                {
+                    "source": source,
+                    "read_sequence": read_sequence,
+                    "servo_ids": [int(self._ids[i]) for i in jump_indices],
+                    "previous_raw_position_ticks": previous.tolist(),
+                    "raw_position_ticks": positions.tolist(),
+                    "delta_rad": delta_rad.tolist(),
+                    "threshold_rad": POSITION_JUMP_THRESHOLD_RAD,
+                },
+                health,
+            )
+
+        if new_alerts:
+            with self._diagnostics_lock:
+                self._status_alert_count += 1
+            self._append_event(
+                "status_alert",
+                stamp,
+                {
+                    "source": source,
+                    "read_sequence": read_sequence,
+                    "status_error_bytes": {
+                        str(dxl_id): error for dxl_id, error in new_alerts.items()
+                    },
+                },
+                health,
+            )
+
+        if cleared_alerts:
+            self._append_event(
+                "status_alert_cleared",
+                stamp,
+                {
+                    "source": source,
+                    "read_sequence": read_sequence,
+                    "servo_ids": cleared_alerts,
+                },
+            )
+
+    def _event_health_snapshot(self):
+        """Read fault registers once per anomaly cluster, never periodically."""
+        now = time.monotonic()
+        with self._diagnostics_lock:
+            if now - self._last_event_health_at < EVENT_HEALTH_SNAPSHOT_COOLDOWN_S:
+                return copy.deepcopy(self._last_event_health)
+            self._last_event_health_at = now
+        try:
+            health = self.read_health(include_current_limit=False)
+        except Exception as exc:
+            health = [{"snapshot_error": str(exc)}]
+        with self._diagnostics_lock:
+            self._last_event_health = copy.deepcopy(health)
+        return health
+
+    def diagnostics_snapshot(self):
+        """Return counters, latest raw reads, and retained events with no bus I/O."""
+        with self._diagnostics_lock:
+            return {
+                "port": self._port,
+                "session": self._diagnostic_session,
+                "servo_ids": [int(dxl_id) for dxl_id in self._ids],
+                "comm_retry_count": self._comm_retry_count,
+                "comm_failure_count": self._comm_failure_count,
+                "status_alert_count": self._status_alert_count,
+                "position_jump_count": self._position_jump_count,
+                "latest_reads": copy.deepcopy(self._latest_reads),
+                "events": copy.deepcopy(list(self._diagnostic_events)),
+            }
     
 
     def set_current(self, currents: Sequence[float]):
@@ -324,24 +564,25 @@ class DynamixelDriver(DynamixelDriverProtocol):
             raise RuntimeError("Failed to syncwrite goal position")
         group.clearParam()
 
-    def read_health(self):
+    def read_health(self, include_current_limit=True):
         """Best-effort per-servo health telemetry for diagnosing torque dropouts.
 
         Returns one dict per servo id with keys: ``id``, ``torque_enable`` (0/1),
         ``hw_error`` (raw Hardware Error Status byte, reg 70), ``hw_error_flags`` (list
-        of labels), ``present_pwm`` (reg 124, signed), ``present_current`` (reg 126,
+        of labels), ``realtime_tick`` (reg 120, 1 ms), ``present_pwm`` (reg 124,
+        signed), ``present_current`` (reg 126,
         signed), ``present_velocity`` (reg 128, signed), ``present_position`` (reg 132,
         signed), ``position_trajectory`` (reg 140, signed), ``input_voltage`` (reg 144,
         raw, 0.1 V/LSB), ``temperature`` (reg 146, deg C), ``current_limit`` (reg 38).
         Any field that fails to read is ``None``.
 
         Uses TWO GroupSyncRead transactions (block A 64..70 for torque/error, block B
-        124..146 for pwm/current/velocity/position/position-trajectory/voltage/temp)
+        120..146 for tick/pwm/current/velocity/position/trajectory/voltage/temp)
         covering all servos at once -- ~2 bus round-trips regardless of field count -- so
         it is cheap enough to call at ~10 Hz without badly stalling the control loop. The
         Current Limit is EEPROM/constant, so it is read once (via individual TxRx) and cached.
         """
-        if self._current_limit_cache is None:
+        if include_current_limit and self._current_limit_cache is None:
             self._current_limit_cache = []
             for dxl_id in self._ids:
                 lim, res, _ = self._packetHandler.read2ByteTxRx(
@@ -349,13 +590,14 @@ class DynamixelDriver(DynamixelDriverProtocol):
                 )
                 self._current_limit_cache.append(int(lim) if res == COMM_SUCCESS else None)
 
-        # Two batched reads for ALL servos (block A: torque/error, block B: 124..146).
+        # Two batched reads for ALL servos (block A: torque/error, block B: 120..146).
         ok_a = self._healthReadA.txRxPacket() == COMM_SUCCESS
         ok_b = self._healthReadB.txRxPacket() == COMM_SUCCESS
 
         health = []
         for i, dxl_id in enumerate(self._ids):
             te = he = None
+            tick = None
             pwm = present_current = velocity = position = pos_traj = voltage = tmp = None
             if ok_a:
                 if self._healthReadA.isAvailable(dxl_id, ADDR_TORQUE_ENABLE, 1):
@@ -364,6 +606,8 @@ class DynamixelDriver(DynamixelDriverProtocol):
                     he = self._healthReadA.getData(dxl_id, ADDR_HARDWARE_ERROR_STATUS, 1)
             if ok_b:
                 b = self._healthReadB
+                if b.isAvailable(dxl_id, ADDR_REALTIME_TICK, 2):
+                    tick = b.getData(dxl_id, ADDR_REALTIME_TICK, 2)
                 if b.isAvailable(dxl_id, ADDR_PRESENT_PWM, 2):
                     pwm = _signed(b.getData(dxl_id, ADDR_PRESENT_PWM, 2), 2)
                 if b.isAvailable(dxl_id, ADDR_PRESENT_CURRENT, 2):
@@ -383,6 +627,7 @@ class DynamixelDriver(DynamixelDriverProtocol):
                 "torque_enable": int(te) if te is not None else None,
                 "hw_error": int(he) if he is not None else None,
                 "hw_error_flags": hw_error_flags(he) if he is not None else None,
+                "realtime_tick": int(tick) if tick is not None else None,
                 "present_pwm": pwm,
                 "present_current": present_current,
                 "present_velocity": velocity,
@@ -390,7 +635,10 @@ class DynamixelDriver(DynamixelDriverProtocol):
                 "position_trajectory": pos_traj,
                 "input_voltage": int(voltage) if voltage is not None else None,
                 "temperature": int(tmp) if tmp is not None else None,
-                "current_limit": self._current_limit_cache[i],
+                "current_limit": (
+                    self._current_limit_cache[i]
+                    if self._current_limit_cache is not None else None
+                ),
             })
         return health
 

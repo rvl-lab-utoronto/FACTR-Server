@@ -216,5 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# API-independent Rerun SDK runtime used by the FACTR diagnostics sidecar.
+.rerun-site/
 # FACTR teleop runtime health/telemetry log (see .vscode task)
 FACTR_Teleop/logs/

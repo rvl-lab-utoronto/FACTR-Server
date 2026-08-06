@@ -8,17 +8,19 @@ This project allows users to read the joint positions of two FACTR-inspired arms
 
 The relay exposes typed WebSocket streams for non-ROS2 clients: left at
 `ws://localhost:5000/ws/left` and right at `ws://localhost:5001/ws/right`.
-Each connection carries both live joint readings and diagnostics. Gravity-comp
+Each connection carries both raw joint readings and live control telemetry. Gravity-comp
 commands and status remain small HTTP request/response routes on the same ports.
 
-The first frame is always diagnostics (with `available: false` while the teleop
-is starting). Readings then stream at 200 Hz, and a fresh diagnostics frame is
-sent whenever ROS publishes a new snapshot:
+Raw readings stream at 200 Hz. A typed telemetry frame is sent whenever the
+teleop publishes a new 50 Hz control sample:
 
 ```json
-{"type":"diagnostics","side":"left","available":true,"dfc_raw_offsets_deg":[...]}
 {"type":"reading","side":"left","joint_pos":[...]}
+{"type":"telemetry","side":"left","model_q_rad":[...],"gravity_torque_nm":[...]}
 ```
+
+Calibration is not sent over the socket. It lives in DFC's leader config and is
+injected into each managed teleop as `DFC_LEADER_CONFIG` at process launch.
 
 The stream is duplex: clients push the follower's external joint torques back up
 the same connection for the leader's force feedback. Joint space today — `tau`
@@ -174,7 +176,7 @@ Make sure that your U2D2 Power Hub Board is connected to your computer. Then, na
 
    4, run `ros2 run factr_teleop factr_rizon_testing`
 
-   To publish joint positions and diagnostics over WebSocket:
+   To publish joint positions and live telemetry over WebSocket:
 
    5, start a new terminal and run `source install/setup.bash`
 

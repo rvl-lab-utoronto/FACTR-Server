@@ -5,7 +5,6 @@ import rclpy
 from rclpy.node import Node
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
-import threading
 
 # -- Message types -- 
 from std_msgs.msg import String
@@ -19,7 +18,6 @@ from sensor_msgs.msg import JointState # from ROS2
 # colcon install/ copy and miss edits made here (e.g. the master force-gain ramp).
 from .factr_teleop import FACTRTeleop
 
-import numpy as np
 import time
 import math
 
@@ -39,8 +37,6 @@ def rad_to_deg_signed(rad):
 class FactrRizonTeleop(FACTRTeleop):
     def __init__(self, arm_index: int):
         super().__init__(arm_index)
-        self.joint_positions = np.zeros(7)
-        self.joint_velocities = np.zeros(7) # later
 
         self.group_a = MutuallyExclusiveCallbackGroup()
         self.group_b = MutuallyExclusiveCallbackGroup()
@@ -56,27 +52,23 @@ class FactrRizonTeleop(FACTRTeleop):
         # publish joint_pos every 2ms
 
         self.index = arm_index
-        self.lock = threading.Lock()
 
 
     def get_leader_joint_pos(self):
         """
-        Returns ONLY the current joint positions
+        Return the cached raw positions from the latest control-loop read.
+
+        This method deliberately performs no Dynamixel I/O. DFC must receive the
+        exact sample used by gravity compensation, not an independent second read.
         """
-        self.gripper_pos_prev = self.gripper_pos
-        joint_pos, joint_vel = self.driver.get_positions_and_velocities()
-        return joint_pos
+        return self.get_cached_raw_joint_state().position
 
 
     def control_loop_callback(self):    
         """
         Additional control loop feature: update the joint positions of one of the leader arms (left or right), runs at 500Hz
         """
-        super().control_loop_callback() 
-
-        # update joint positions
-        joint_pos = self.get_leader_joint_pos()
-        self.joint_positions = joint_pos
+        super().control_loop_callback()
 
 
     def publish_joint_pos(self):
@@ -84,9 +76,8 @@ class FactrRizonTeleop(FACTRTeleop):
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.name = [f'joint_{i}' for i in range(7)]
 
-        with self.lock:
-            positions = self.joint_positions.tolist()   # np.array -> list[float]
-            msg.position = positions
+        positions = self.get_leader_joint_pos().tolist()
+        msg.position = positions
 
         msg.velocity = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] 
 

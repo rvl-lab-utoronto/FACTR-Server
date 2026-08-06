@@ -4,8 +4,8 @@
 # routes on separate ports, matching the teleop nodes' per-arm design.
 #
 # arm_index selects everything for that instance:
-#   0 -> left  : WS :5000/ws/left   <- ROS topics /joint_pos_left + /factr_diagnostics_left
-#   1 -> right : WS :5001/ws/right  <- ROS topics /joint_pos_right + /factr_diagnostics_right
+#   0 -> left  : WS :5000/ws/left   <- ROS /joint_pos_left + /factr_telemetry_left
+#   1 -> right : WS :5001/ws/right  <- ROS /joint_pos_right + /factr_telemetry_right
 #
 # The WebSocket is duplex: inbound force_feedback frames (follower external joint
 # torques) are republished to the teleop on /factr_force_feedback_<side>, with a
@@ -30,11 +30,7 @@ from std_msgs.msg import Float64, String
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, ValidationError, field_validator
-
-# Relative import so the publisher loads from THIS src tree when launched as
-# `-m src.factr_fastapi.factr_fastapi.factr_api` (see factr_teleop's READMEs).
-from . import factr_rerun
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 
 #: DoF+1 placeholder (7 arm joints + trailing gripper) served before a publisher connects.
@@ -44,22 +40,19 @@ _BROADCAST_HZ = 200.0
 
 
 class GravCompStatus(BaseModel):
-    #: The master output-gain target this trigger published: 1.0 (enable) or 0.0
-    #: (disable). The teleop runs the ramp itself, driving applied torque to the target
-    #: over ~1s (0 = limp, 1 = full forces). These endpoints are pure triggers -- the
-    #: caller does not choose a gain value.
+    #: The gravity-compensation activation target this trigger published.
     side: str
     gain_target: float
 
 
 class FactrStatus(BaseModel):
-    #: This leader's live master output gain(s). ``force_gain`` is the actual ramped
-    #: multiplier applied to every commanded torque right now (0 = limp, 1 = full),
-    #: reported by the teleop; ``force_gain_target`` is what this relay last commanded.
-    #: ``grav_comp_enabled`` is True once the gain has effectively reached full (>= 0.99).
+    #: Gravity compensation and follower force feedback have independent activation
+    #: gains. Neither one scales the other's torque term.
     side: str
-    force_gain: float
-    force_gain_target: float
+    grav_comp_gain: float
+    grav_comp_gain_target: float
+    force_feedback_gain: float
+    force_feedback_gain_target: float
     grav_comp_enabled: bool
     force_feedback_enabled: bool
 
@@ -92,25 +85,35 @@ class ForceFeedbackAck(BaseModel):
 class ForceFeedbackToggleStatus(BaseModel):
     side: str
     force_feedback_enabled: bool
+    gain_target: float
 
 
-class DiagnosticsStatus(BaseModel):
-    available: bool
+class TelemetryStatus(BaseModel):
+    """One live FACTR dynamics/control sample."""
+
     side: str
-    raw_q_rad: list[float] = []
-    configured_home_q_rad: list[float] = []
-    joint_offsets_rad: list[float] = []
-    model_signs: list[float] = []
-    model_q_rad: list[float] = []
-    dfc_home_q_rad: list[float] = []
-    dfc_to_factr_signs: list[float] = []
-    dfc_to_factr_offset_rad: list[float] = []
-    dfc_raw_offsets_deg: list[float] = []
-    dfc_sign_flip_joints: list[int] = []
-    dfc_wrap_deg: bool | None = None
-    dfc_drop_trailing: int | None = None
-    dfc_gripper_open: float | None = None
-    dfc_gripper_closed: float | None = None
+    stamp_monotonic_ns: int
+    raw_q_rad: list[float]
+    model_q_rad: list[float]
+    model_dq_rad_s: list[float]
+    home_error_rad: list[float]
+    joint_offsets_rad: list[float]
+    model_signs: list[float]
+    limit_torque_nm: list[float]
+    null_torque_nm: list[float]
+    gravity_torque_nm: list[float]
+    friction_torque_nm: list[float]
+    force_feedback_torque_nm: list[float]
+    applied_torque_nm: list[float]
+    grav_comp_gain: float
+    grav_comp_gain_target: float
+    friction_gain: float
+    force_feedback_gain: float
+    force_feedback_gain_target: float
+    # Driver diagnostics are already JSON-normalized by the teleop. Keeping the
+    # nested structure intact is important: the Rerun sidecar deduplicates its
+    # retained event ring by driver session/sequence.
+    dynamixel: list[dict] = Field(default_factory=list)
 
 
 def _side_for(arm_index: int) -> str:
@@ -121,8 +124,8 @@ class FactrAPI(Node):
     """One leader arm's ROS<->WebSocket bridge plus HTTP control surface.
 
     ``WS /ws/{side}`` continuously emits typed JSON frames for both the latest
-    ``/joint_pos_{side}`` reading and the latest ``/factr_diagnostics_{side}``
-    snapshot, and accepts inbound ``force_feedback`` frames that it republishes on
+    ``/joint_pos_{side}`` reading and ``/factr_telemetry_{side}`` live sample,
+    and accepts inbound ``force_feedback`` frames that it republishes on
     ``/factr_force_feedback_{side}`` (``POST /force_feedback_{side}`` is the
     stream-less fallback). The bodyless ``POST /enable_grav_comp_{side}`` and
     ``POST /disable_grav_comp_{side}`` triggers remain HTTP commands, and
@@ -142,44 +145,59 @@ class FactrAPI(Node):
         self.port = _BASE_PORT + arm_index
         self.topic = f"/joint_pos_{self.side}"
         self.stream_route = f"/ws/{self.side}"
-        self.gain_topic = f"/factr_gain_{self.side}"
-        self.gain_state_topic = f"/factr_gain_state_{self.side}"
+        self.grav_comp_gain_topic = f"/factr_grav_comp_gain_{self.side}"
+        self.grav_comp_gain_state_topic = f"/factr_grav_comp_gain_state_{self.side}"
+        self.force_feedback_gain_topic = f"/factr_force_feedback_gain_{self.side}"
+        self.force_feedback_gain_state_topic = (
+            f"/factr_force_feedback_gain_state_{self.side}"
+        )
         self.enable_route = f"/enable_grav_comp_{self.side}"
         self.disable_route = f"/disable_grav_comp_{self.side}"
         self.status_route = f"/status_{self.side}"
-        self.diagnostics_topic = f"/factr_diagnostics_{self.side}"
+        self.telemetry_topic = f"/factr_telemetry_{self.side}"
         self.force_feedback_topic = f"/factr_force_feedback_{self.side}"
         self.force_feedback_route = f"/force_feedback_{self.side}"
         self.enable_force_feedback_route = f"/enable_force_feedback_{self.side}"
         self.disable_force_feedback_route = f"/disable_force_feedback_{self.side}"
 
         self.joint_pos: list[float] = list(_DEFAULT_JOINT_POS)
-        #: Last target this relay commanded, and the live gain the teleop reports back.
-        self.gain_target: float = 0.0
-        self.force_gain: float = 0.0
-        # Follower torques are opt-in. Disabling also publishes one zero sample;
-        # the teleop's own staleness gate remains the final fail-safe.
-        self.force_feedback_enabled = False
-        self.diagnostics: dict = {}
-        self.diagnostics_version = 0
+        #: Last targets this relay commanded and the independent live gains reported
+        #: by the teleop.
+        self.grav_comp_gain_target: float = 0.0
+        self.grav_comp_gain: float = 0.0
+        self.force_feedback_gain_target: float = 0.0
+        self.force_feedback_gain: float = 0.0
+        self.telemetry: dict = {}
+        self.telemetry_version = 0
         self.lock = threading.Lock()
-        #: Shared per-process Rerun sink; both sides feed one recording. Never
-        #: raises — without rerun-sdk (or a reachable proxy) it self-disables.
-        self.rerun = factr_rerun.shared_publisher(self.get_logger())
 
         self.create_subscription(JointState, self.topic, self._update_joint_pos, 10)
-        # The teleop reports its LIVE master gain here; served at GET /status_<side>.
-        self.create_subscription(Float64, self.gain_state_topic, self._update_gain_state, 10)
-        self.create_subscription(String, self.diagnostics_topic, self._update_diagnostics, 10)
-        # Setpoint out to the teleop: the master output-gain target it ramps toward.
-        self.gain_pub = self.create_publisher(Float64, self.gain_topic, 10)
+        self.create_subscription(
+            Float64,
+            self.grav_comp_gain_state_topic,
+            self._update_grav_comp_gain_state,
+            10,
+        )
+        self.create_subscription(
+            Float64,
+            self.force_feedback_gain_state_topic,
+            self._update_force_feedback_gain_state,
+            10,
+        )
+        self.create_subscription(String, self.telemetry_topic, self._update_telemetry, 10)
+        self.grav_comp_gain_pub = self.create_publisher(
+            Float64, self.grav_comp_gain_topic, 10
+        )
+        self.force_feedback_gain_pub = self.create_publisher(
+            Float64, self.force_feedback_gain_topic, 10
+        )
         # Follower external joint torques in to the teleop's force-feedback term
         # (JointState.effort, one torque per arm joint).
         self.force_feedback_pub = self.create_publisher(
             JointState, self.force_feedback_topic, 10
         )
 
-        # One push stream replaces the former reading and diagnostics GET routes.
+        # One push stream carries independent raw-reading and telemetry frames.
         # Gain status and the enable/disable commands remain request/response HTTP.
         app.add_api_websocket_route(self.stream_route, self.stream)
         app.add_api_route(
@@ -217,7 +235,7 @@ class FactrAPI(Node):
         )
         self.get_logger().info(
             f"FACTR API [{self.side}]: WS :{self.port}{self.stream_route}  <-  "
-            f"{self.topic} + {self.diagnostics_topic}"
+            f"{self.topic} + {self.telemetry_topic}"
         )
         self.get_logger().info(
             f"FACTR API [{self.side}]: WS force_feedback frames / POST "
@@ -226,24 +244,24 @@ class FactrAPI(Node):
         self.get_logger().info(
             f"FACTR API [{self.side}]: POST :{self.port}"
             f"{self.enable_force_feedback_route} / {self.disable_force_feedback_route}"
+            f"  ->  {self.force_feedback_gain_topic}"
         )
         self.get_logger().info(
             f"FACTR API [{self.side}]: GET :{self.port}{self.status_route}  <-  "
-            f"{self.gain_state_topic}"
+            f"{self.grav_comp_gain_state_topic} + "
+            f"{self.force_feedback_gain_state_topic}"
         )
         self.get_logger().info(
             f"FACTR API [{self.side}]: POST :{self.port}{self.enable_route} / "
-            f"{self.disable_route}  ->  {self.gain_topic}"
+            f"{self.disable_route}  ->  {self.grav_comp_gain_topic}"
         )
 
     async def stream(self, websocket: WebSocket) -> None:
         """Serve one client on a duplex WebSocket: push state out, take feedback in.
 
         Outbound (:meth:`_stream_sender`, a concurrent task): readings at 200 Hz and
-        each new diagnostics snapshot. Diagnostics is always the first frame on a new
-        connection, including an ``available=false`` placeholder while the teleop is
-        still starting. Frames are tagged with ``type`` so clients can update the two
-        caches independently.
+        each new live telemetry sample. Frames are tagged with ``type`` so clients
+        can update the raw-reading and telemetry caches independently.
 
         Inbound (this coroutine): ``force_feedback`` frames, republished to the
         teleop on ``/factr_force_feedback_<side>``. Malformed frames are logged and
@@ -263,19 +281,19 @@ class FactrAPI(Node):
                 await sender
 
     async def _stream_sender(self, websocket: WebSocket) -> None:
-        last_diagnostics_version = -1
+        last_telemetry_version = -1
         period_s = 1.0 / _BROADCAST_HZ
         try:
             while True:
                 with self.lock:
                     joint_pos = list(self.joint_pos)
-                    diagnostics = dict(self.diagnostics)
-                    diagnostics_version = self.diagnostics_version
+                    telemetry = dict(self.telemetry)
+                    telemetry_version = self.telemetry_version
 
-                if diagnostics_version != last_diagnostics_version:
-                    payload = self._diagnostics_payload(diagnostics)
-                    await websocket.send_json({"type": "diagnostics", **payload})
-                    last_diagnostics_version = diagnostics_version
+                if telemetry and telemetry_version != last_telemetry_version:
+                    payload = self._telemetry_payload(telemetry)
+                    await websocket.send_json({"type": "telemetry", **payload})
+                    last_telemetry_version = telemetry_version
 
                 await websocket.send_json({
                     "type": "reading",
@@ -325,93 +343,96 @@ class FactrAPI(Node):
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.effort = [float(x) for x in feedback.tau]
-        with self.lock:
-            if not self.force_feedback_enabled:
-                return
-            self.force_feedback_pub.publish(msg)
+        self.force_feedback_pub.publish(msg)
 
     async def enable_force_feedback(self) -> ForceFeedbackToggleStatus:
-        """Allow follower-torque samples through to this leader."""
-        with self.lock:
-            self.force_feedback_enabled = True
-        self.get_logger().info(f"FACTR API [{self.side}]: force feedback enabled")
+        """Ramp only the follower-force term up to its configured strength."""
+        self._publish_force_feedback_gain_target(1.0)
         return ForceFeedbackToggleStatus(
-            side=self.side, force_feedback_enabled=True,
+            side=self.side, force_feedback_enabled=True, gain_target=1.0,
         )
 
     async def disable_force_feedback(self) -> ForceFeedbackToggleStatus:
-        """Block follower torques and immediately command a zero sample."""
-        msg = JointState()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        with self.lock:
-            self.force_feedback_enabled = False
-            msg.effort = [0.0] * max(0, len(self.joint_pos) - 1)
-            self.force_feedback_pub.publish(msg)
-        self.get_logger().info(f"FACTR API [{self.side}]: force feedback disabled")
+        """Ramp only the follower-force term down, leaving gravity compensation alone."""
+        self._publish_force_feedback_gain_target(0.0)
         return ForceFeedbackToggleStatus(
-            side=self.side, force_feedback_enabled=False,
+            side=self.side, force_feedback_enabled=False, gain_target=0.0,
         )
 
     async def get_status(self) -> FactrStatus:
-        """Return this leader's live master gain(s): actual, commanded target, and enabled."""
+        """Return both independent live gains and their commanded targets."""
         with self.lock:
-            force_gain = self.force_gain
-            gain_target = self.gain_target
-            force_feedback_enabled = self.force_feedback_enabled
+            grav_comp_gain = self.grav_comp_gain
+            grav_comp_gain_target = self.grav_comp_gain_target
+            force_feedback_gain = self.force_feedback_gain
+            force_feedback_gain_target = self.force_feedback_gain_target
         return FactrStatus(
             side=self.side,
-            force_gain=force_gain,
-            force_gain_target=gain_target,
-            grav_comp_enabled=force_gain >= 0.99,
-            force_feedback_enabled=force_feedback_enabled,
+            grav_comp_gain=grav_comp_gain,
+            grav_comp_gain_target=grav_comp_gain_target,
+            force_feedback_gain=force_feedback_gain,
+            force_feedback_gain_target=force_feedback_gain_target,
+            grav_comp_enabled=grav_comp_gain >= 0.99,
+            force_feedback_enabled=force_feedback_gain >= 0.99,
         )
 
-    def _diagnostics_payload(self, payload: dict) -> dict:
-        """Validate and normalize a diagnostics snapshot for the wire."""
-        if not payload:
-            status = DiagnosticsStatus(available=False, side=self.side)
-            return status.model_dump()
-        payload.pop("captured_monotonic_ns", None)
-        payload.update(available=True, side=self.side)
-        return DiagnosticsStatus(**payload).model_dump()
+    def _telemetry_payload(self, payload: dict) -> dict:
+        """Validate and normalize one live telemetry sample for the wire."""
+        payload["side"] = self.side
+        return TelemetryStatus(**payload).model_dump()
 
     async def enable_grav_comp(self) -> GravCompStatus:
-        """Trigger the teleop's ramp-up routine: applied torque fades 0->full over ~1s."""
-        return self._publish_gain_target(1.0)
+        """Ramp only gravity compensation up to its configured strength."""
+        return self._publish_grav_comp_gain_target(1.0)
 
     async def disable_grav_comp(self) -> GravCompStatus:
-        """Trigger the teleop's ramp-down routine: applied torque fades full->0 over ~1s."""
-        return self._publish_gain_target(0.0)
+        """Ramp only gravity compensation down, leaving force feedback alone."""
+        return self._publish_grav_comp_gain_target(0.0)
 
-    def _publish_gain_target(self, target: float) -> GravCompStatus:
+    def _publish_grav_comp_gain_target(self, target: float) -> GravCompStatus:
         msg = Float64()
         msg.data = float(target)
-        self.gain_pub.publish(msg)
+        self.grav_comp_gain_pub.publish(msg)
         with self.lock:
-            self.gain_target = float(target)
+            self.grav_comp_gain_target = float(target)
         self.get_logger().info(f"FACTR API [{self.side}]: grav comp gain target -> {target:.1f}")
         return GravCompStatus(side=self.side, gain_target=float(target))
+
+    def _publish_force_feedback_gain_target(self, target: float) -> None:
+        msg = Float64()
+        msg.data = float(target)
+        self.force_feedback_gain_pub.publish(msg)
+        with self.lock:
+            self.force_feedback_gain_target = float(target)
+        self.get_logger().info(
+            f"FACTR API [{self.side}]: force feedback gain target -> {target:.1f}"
+        )
 
     def _update_joint_pos(self, msg: JointState) -> None:
         with self.lock:
             self.joint_pos = list(msg.position)
 
-    def _update_gain_state(self, msg: Float64) -> None:
+    def _update_grav_comp_gain_state(self, msg: Float64) -> None:
         with self.lock:
-            self.force_gain = float(msg.data)
-        self.rerun.publish_gain(self.side, float(msg.data))
+            self.grav_comp_gain = float(msg.data)
 
-    def _update_diagnostics(self, msg: String) -> None:
+    def _update_force_feedback_gain_state(self, msg: Float64) -> None:
+        with self.lock:
+            self.force_feedback_gain = float(msg.data)
+
+    def _update_telemetry(self, msg: String) -> None:
         try:
             payload = json.loads(msg.data)
-        except (TypeError, ValueError) as exc:
-            self.get_logger().error(f"invalid diagnostics JSON: {exc}")
+            if not isinstance(payload, dict):
+                raise ValueError("payload is not a JSON object")
+            payload = self._telemetry_payload(payload)
+            payload.pop("side", None)  # sender adds its authoritative side
+        except (TypeError, ValueError, ValidationError) as exc:
+            self.get_logger().error(f"invalid telemetry JSON: {exc}")
             return
-        if isinstance(payload, dict):
-            with self.lock:
-                self.diagnostics = payload
-                self.diagnostics_version += 1
-            self.rerun.publish_diagnostics(self.side, payload)
+        with self.lock:
+            self.telemetry = payload
+            self.telemetry_version += 1
 
 
 def _ros_spin(node: Node) -> None:

@@ -10,35 +10,18 @@ dynamixel:
     "XC330_T288_T", "XM430_W210_T", "XC330_T288_T", "XM430_W210_T", 
     "XC330_T288_T", "XC330_T288_T", "XC330_T288_T", "XC330_T288_T",
   ]
-  joint_signs: [1, 1, 1, 1, 1, 1, 1, 1]
+  joint_signs: [1, 1, 1, 1, 1, -1, -1, 1]
 
 arm_teleop:
   # URDF used for creating leader arm dynamics model to compute gravity compensation
-  leader_urdf: "flexiv_teleop_pos45_x.urdf"
+  leader_urdf: "flexiv_teleop_pos45_x_lighter.urdf"
   num_arm_joints: 7
   # Follower joint limits, from Rizon4s_synched.urdf (Flexiv Rizon 4s)
   arm_joint_limits_max: [2.8798, 2.3562, 3.0543, 2.7751, 3.0543, 4.6251, 3.0543]
   arm_joint_limits_min: [-2.8798, -2.3562, -3.0543, -1.9548, -3.0543, -1.4835, -3.0543]
   arm_joint_limits_safety_margin: 0.1
   initialization:
-    # FACTR dynamics-model home.
-    calibration_joint_pos: [0.0, 0.0, 0.0, 1.57, 0.0, 0.0, 0.0]
-    # Same measured physical home, represented in canonical DFC/Rizon coordinates.
-    dfc_home_joint_pos: [0.2085668456, 0.1165879940, 0.1303760951, 1.0853220667, 0.0230383461, 0.0076794487, -0.2453932928]
-    # q_factr = dfc_to_factr_signs * q_dfc + dfc_to_factr_offset_rad.
-    # Joint 6 changes sign because DFC flips it and the FACTR mechanism does not.
-    dfc_to_factr_signs: [1, 1, 1, 1, 1, -1, 1]
-    dfc_to_factr_offset_rad: [-0.2085668456, -0.1165879940, -0.1303760951, 0.4846779333, -0.0230383461, 0.0076794487, 0.2453932928]
-    # Complete raw FACTR payload -> canonical DFC/Rizon stream convention.
-    dfc_raw_offsets_deg: [-78.05, 96.68, 97.47, 152.23, 1.32, 89.56, 75.94]
-    dfc_sign_flip_joints: [5]
-    dfc_wrap_deg: true
-    dfc_drop_trailing: 1
-    dfc_gripper_open: 1.0799
-    dfc_gripper_closed: 1.6153
-    # FACTR raw Dynamixel -> dynamics-model offsets from the working grav-comp run.
-    # These are calibration offsets, not raw encoder readings from a captured pose.
-    joint_offsets: [1.5707963268, 4.7123889804, 4.7123889804, 3.1415926536, 0.0, 4.7123889804, 4.7123889804]
+    # Control/model target only. DFC owns and injects all leader calibration.
     initial_match_joint_pos: [0.0, 0.0, 0.0, 1.57, 0.0, 0.0, 0.0]
 gripper_teleop:
   # The maximum range (in rad) of the leader gripper trigger
@@ -49,12 +32,12 @@ controller:
   # Servo health telemetry (temp + current) sample period in seconds. 0.1 = 10 Hz.
   # read_health() batches all servos into 2 GroupSyncRead transactions, so 10 Hz is
   # cheap (a few ms/sample, not the ~30 ms of the old per-servo reads). 0 disables.
-  health_log_period: 0.1
+  health_log_period: 0
   torque_feedback:
     # Capability is on for both leaders; the API relay's runtime gate defaults
     # off and is controlled by /enable_force_feedback_left.
     enable: True
-    gain: 3.0
+    gain: 1.5
     damping: 0.0
     motor_scalar: 94.5652173913
     # Staleness cutoff [s] and per-joint clip [Nm] for the follower external-torque
@@ -63,15 +46,16 @@ controller:
     # +-max_torque before use.
     timeout: 0.25
     max_torque: 10.0
-  # Seconds for the master output gain to ramp 0->1 when grav comp is enabled from the
-  # dashboard (rate = 1/force_gain_ramp_time per second; scales every force term at once).
-  force_gain_ramp_time: 1.0
+  # Independent activation ramps. Each scales only its own configured torque term.
+  grav_comp_gain_ramp_time: 1.0
+  force_feedback_gain_ramp_time: 1.0
   gravity_comp:
     enable: True
-    # Per-component weight on the gravity-comp torque. Overall fade-in is the master output
-    # gain (force_gain_ramp_time above); there is no per-grav-comp home-pose gate anymore.
-    gain: 0.55
+    # Physical gravity-compensation strength; the runtime grav-comp activation
+    # ramp above is independent of force feedback.
+    gain: 0.65
   null_space_regulation:
+    enable: false
     null_space_joint_target: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] # TODO: edit this to home pose of follower arm
     kp: 0.1
     kd: 0.01

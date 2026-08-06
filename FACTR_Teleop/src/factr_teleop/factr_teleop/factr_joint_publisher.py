@@ -35,7 +35,7 @@ from factr_teleop.factr_teleop import find_ttyusb
 
 
 class FactrJointPublisher(Node):
-    """Reads one leader arm's servos (no torque) and publishes calibrated /joint_pos_{side}."""
+    """Read one leader with torque off and publish untouched Dynamixel state."""
 
     def __init__(self):
         super().__init__("factr_joint_publisher")
@@ -51,12 +51,6 @@ class FactrJointPublisher(Node):
 
         self.dt = 1.0 / self.config["controller"]["frequency"]
         self.num_arm_joints = self.config["arm_teleop"]["num_arm_joints"]
-        self.calibration_joint_pos = np.array(
-            self.config["arm_teleop"]["initialization"]["calibration_joint_pos"]
-        )
-        self.gripper_pos = 0.0
-        self.gripper_pos_prev = 0.0
-
         # ---- driver init: torque stays OFF, arm backdrivable ----
         self.servo_types = self.config["dynamixel"]["servo_types"]
         self.num_motors = len(self.servo_types)
@@ -86,8 +80,6 @@ class FactrJointPublisher(Node):
         except Exception as e:
             self.get_logger().warning(f"set_torque_mode(False) failed ({e}); reading anyway")
 
-        self._get_dynamixel_offsets()
-
         self.pub = self.create_publisher(JointState, f"/joint_pos_{self.side}", 10)
         self.timer = self.create_timer(self.dt, self.publish_cb)
         self.get_logger().info(
@@ -95,52 +87,9 @@ class FactrJointPublisher(Node):
             f"(torque OFF, backdrivable) -> /joint_pos_{self.side} @ {1.0 / self.dt:.0f} Hz"
         )
 
-    # -- calibration (verbatim from FACTRTeleop, so values match full teleop) --
-
-    def _get_dynamixel_offsets(self, verbose=True):
-        # warm up
-        for _ in range(10):
-            self.driver.get_positions_and_velocities()
-
-        def _get_error(calibration_joint_pos, offset, index, joint_state):
-            joint_sign_i = self.joint_signs[index]
-            joint_i = joint_sign_i * (joint_state[index] - offset)
-            start_i = calibration_joint_pos[index]
-            return np.abs(joint_i - start_i)
-
-        self.joint_offsets = []
-        curr_joints, _ = self.driver.get_positions_and_velocities()
-        for i in range(self.num_arm_joints):
-            best_offset = 0
-            best_error = 1e9
-            for offset in np.linspace(-20 * np.pi, 20 * np.pi, 20 * 4 + 1):
-                error = _get_error(self.calibration_joint_pos, offset, i, curr_joints)
-                if error < best_error:
-                    best_error = error
-                    best_offset = offset
-            self.joint_offsets.append(best_offset)
-        # gripper offset = raw current gripper reading (zeros the gripper at staurtup)
-        self.joint_offsets.append(curr_joints[-1])
-        self.joint_offsets = np.asarray(self.joint_offsets)
-        if verbose:
-            self.get_logger().info(
-                "joint offsets: [" + ", ".join(f"{x:.3f}" for x in self.joint_offsets) + "]"
-            )
-
-    def get_leader_joint_states(self):
-        self.gripper_pos_prev = self.gripper_pos
-        joint_pos, joint_vel = self.driver.get_positions_and_velocities()
-        joint_pos_arm = (
-            joint_pos[0:self.num_arm_joints] - self.joint_offsets[0:self.num_arm_joints]
-        ) * self.joint_signs[0:self.num_arm_joints]
-        self.gripper_pos = (joint_pos[-1] - self.joint_offsets[-1]) * self.joint_signs[-1]
-        joint_vel_arm = joint_vel[0:self.num_arm_joints] * self.joint_signs[0:self.num_arm_joints]
-        gripper_vel = (self.gripper_pos - self.gripper_pos_prev) / self.dt
-        return joint_pos_arm, joint_vel_arm, self.gripper_pos, gripper_vel
-
     def publish_cb(self):
         try:
-            arm_pos, arm_vel, grip_pos, grip_vel = self.get_leader_joint_states()
+            raw_pos, raw_vel = self.driver.get_positions_and_velocities()
         except RuntimeError:
             # Transient Dynamixel bus timeout (e.g. -3001) at 500 Hz: skip this tick and
             # keep the node alive rather than aborting; the next read usually succeeds.
@@ -151,8 +100,8 @@ class FactrJointPublisher(Node):
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.name = [f"joint_{i}" for i in range(self.num_arm_joints)] + ["gripper"]
-        msg.position = arm_pos.tolist() + [float(grip_pos)]  # DoF+1 calibrated values
-        msg.velocity = arm_vel.tolist() + [float(grip_vel)]
+        msg.position = np.asarray(raw_pos, dtype=float).tolist()
+        msg.velocity = np.asarray(raw_vel, dtype=float).tolist()
         self.pub.publish(msg)
 
 

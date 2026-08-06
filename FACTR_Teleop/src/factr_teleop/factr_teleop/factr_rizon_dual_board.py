@@ -6,7 +6,6 @@ import rclpy
 from rclpy.node import Node
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
-import threading
 
 # -- Message types -- 
 from std_msgs.msg import String
@@ -14,8 +13,9 @@ from sensor_msgs.msg import JointState # from ROS2
 
 # Relative import so the base class loads from THIS src tree (the launch runs
 # `-m src.factr_teleop...`); a bare `factr_teleop.` import would resolve to the stale
-# colcon install/ copy and miss edits made here (e.g. the master force-gain ramp).
+# colcon install/ copy and miss edits made here.
 from .factr_teleop_dual_base import FACTRTeleopDualBase
+from .gain_control import compose_arm_torque
 
 import numpy as np
 import time
@@ -36,8 +36,6 @@ msg = "something"
 class FactrRizonTeleopDualBoard(FACTRTeleopDualBase):
     def __init__(self, arm_index: int):
         super().__init__(arm_index)
-        self.joint_positions = np.zeros(7)
-        self.joint_velocities = np.zeros(7) # later
 
         self.group_a = MutuallyExclusiveCallbackGroup()
         self.group_b = MutuallyExclusiveCallbackGroup()
@@ -48,17 +46,16 @@ class FactrRizonTeleopDualBoard(FACTRTeleopDualBase):
         # publish joint_pos every 2ms
 
         self.index = arm_index
-        self.lock = threading.Lock()
 
 
     def get_leader_joint_pos(self):
         """
-        Returns ONLY the current joint positions, merged over both boards in full
-        arm order (config-driven via the base class).
+        Return the cached merged positions from the latest control-loop read.
+
+        This performs no board I/O; both boards are read once in
+        ``get_leader_joint_states`` and that exact merged sample is published.
         """
-        self.gripper_pos_prev = self.gripper_pos
-        joint_pos, _ = self._read_merged_pos_vel()
-        return joint_pos
+        return self.get_cached_raw_joint_state().position
 
 
     def control_loop_callback(self):    
@@ -78,27 +75,32 @@ class FactrRizonTeleopDualBoard(FACTRTeleopDualBase):
         if self.enable_gravity_comp:
             torque_gravity = self.gravity_compensation(leader_arm_pos, leader_arm_vel)
             torque_friction = self.friction_compensation(leader_arm_vel)
-        torque_arm = torque_l + torque_null + torque_gravity + torque_friction
-        
+        torque_feedback = np.zeros(self.num_arm_joints)
         if self.enable_torque_feedback:
             external_joint_torque = self.get_leader_arm_external_joint_torque()
-            torque_arm += self.torque_feedback(external_joint_torque, leader_arm_vel)
+            torque_feedback = self.torque_feedback(
+                external_joint_torque, leader_arm_vel
+            )
 
         # if self.enable_gripper_feedback:
         #     gripper_feedback = self.get_leader_gripper_feedback()
         #     torque_gripper += self.gripper_feedback(leader_gripper_pos, leader_gripper_vel, gripper_feedback)
 
-        # Master output gain (ramped 0->1 on enable) scales EVERY force term at once.
-        gain = self._update_force_gain()
+        grav_gain, feedback_gain = self._update_component_gains()
+        torque_arm = compose_arm_torque(
+            torque_l,
+            torque_null,
+            torque_gravity,
+            torque_friction,
+            torque_feedback,
+            grav_gain,
+            feedback_gain,
+        )
         self._capture_enable_tick(
             leader_arm_pos, leader_arm_vel, torque_l, torque_null,
-            torque_gravity, torque_friction, torque_arm, gain,
+            torque_gravity, torque_friction, torque_feedback, torque_arm, grav_gain,
         )
-        self.set_leader_joint_torque(torque_arm * gain, torque_gripper * gain)
-
-        # update joint positions
-        joint_pos = self.get_leader_joint_pos()
-        self.joint_positions = joint_pos
+        self.set_leader_joint_torque(torque_arm, torque_gripper)
 
         self._log_servo_health()
 
@@ -108,9 +110,8 @@ class FactrRizonTeleopDualBoard(FACTRTeleopDualBase):
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.name = [f'joint_{i}' for i in range(7)]
 
-        with self.lock:
-            positions = self.joint_positions.tolist()   # np.array -> list[float]
-            msg.position = positions
+        positions = self.get_leader_joint_pos().tolist()
+        msg.position = positions
 
         msg.velocity = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] 
 

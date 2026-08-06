@@ -1,0 +1,234 @@
+<?xml version='1.0' encoding='utf-8'?>
+<robot name="flexiv_teleop_neg45_x_lighter_servo_8">
+    <link name="world" />
+    <joint name="world_to_base_link_mount_neg45_x" type="fixed">
+        <parent link="world" />
+        <child link="base_link" />
+        <origin xyz="0 0 0" rpy="-0.785398163397448 0 0" />
+    </joint>
+    <link name="base_link">
+        <inertial>
+            <origin xyz="0.000138819690411 -0.0016195717167 -0.011398646033" rpy="0 0 0" />
+            <mass value="0.111" />
+            <inertia ixx="5.69431420711e-05" ixy="-1.89988345678e-08" ixz="2.12533886224e-07" iyy="5.70931531673e-05" iyz="-9.67738014848e-08" izz="4.0449892976e-05" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="meshes/flexiv_base_link.stl" scale="1 1 1" />
+            </geometry>
+            <material name="flexiv_teleop_mesh">
+                <color rgba="0.72 0.72 0.72 1" />
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="meshes/flexiv_base_link.stl" scale="1 1 1" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="link_1">
+        <inertial>
+            <origin xyz="0.000128700600234 0.0137649642433 0.0809051626206" rpy="0 0 0" />
+            <mass value="0.115" />
+            <inertia ixx="8.88499239897e-05" ixy="-7.59174394204e-09" ixz="-2.35583400109e-08" iyy="8.69121656279e-05" iyz="-9.29367699924e-06" izz="2.40979853064e-05" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="meshes/flexiv_link_1.stl" scale="1 1 1" />
+            </geometry>
+            <material name="flexiv_teleop_mesh">
+                <color rgba="0.72 0.72 0.72 1" />
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="meshes/flexiv_link_1.stl" scale="1 1 1" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="link_2">
+        <inertial>
+            <origin xyz="0.00793675562415 -0.000109251783809 0.0666223895078" rpy="0 0 0" />
+            <mass value="0.04" />
+            <inertia ixx="4.83185929342e-05" ixy="2.81678479977e-08" ixz="-5.48734234067e-06" iyy="5.35587477865e-05" iyz="-3.98475379423e-08" izz="8.23422448459e-06" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="meshes/flexiv_link_2.stl" scale="1 1 1" />
+            </geometry>
+            <material name="flexiv_teleop_mesh">
+                <color rgba="0.72 0.72 0.72 1" />
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="meshes/flexiv_link_2.stl" scale="1 1 1" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="link_3">
+        <inertial>
+            <origin xyz="-0.0139127681942 0.00853073534475 0.0729507412844" rpy="0 0 0" />
+            <mass value="0.109" />
+            <inertia ixx="7.10135399594e-05" ixy="1.11053625207e-06" ixz="8.20244545875e-06" iyy="7.61801750484e-05" iyz="-6.0800450212e-06" izz="2.12507476384e-05" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="meshes/flexiv_link_3.stl" scale="1 1 1" />
+            </geometry>
+            <material name="flexiv_teleop_mesh">
+                <color rgba="0.72 0.72 0.72 1" />
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="meshes/flexiv_link_3.stl" scale="1 1 1" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="link_4">
+        <inertial>
+            <origin xyz="-0.0540997343305 0.00816764457791 -0.019051272093" rpy="0 0 0" />
+            <mass value="0.043" />
+            <inertia ixx="2.20876827944e-05" ixy="6.23352016261e-06" ixz="3.18528787353e-06" iyy="7.33697550748e-05" iyz="2.32871147359e-06" izz="6.23710525809e-05" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="meshes/flexiv_link_4.stl" scale="1 1 1" />
+            </geometry>
+            <material name="flexiv_teleop_mesh">
+                <color rgba="0.72 0.72 0.72 1" />
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="meshes/flexiv_link_4.stl" scale="1 1 1" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="link_5">
+        <inertial>
+            <origin xyz="-0.00892100027515 -0.0649143670541 -0.00041500110174" rpy="0 0 0" />
+            <mass value="0.042" />
+            <inertia ixx="4.02038052197e-05" ixy="-7.74076988776e-06" ixz="-9.52443813495e-08" iyy="6.68054906974e-06" iyz="-3.55627738033e-07" izz="4.31008058781e-05" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="meshes/flexiv_link_5.stl" scale="1 1 1" />
+            </geometry>
+            <material name="flexiv_teleop_mesh">
+                <color rgba="0.72 0.72 0.72 1" />
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="meshes/flexiv_link_5.stl" scale="1 1 1" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="link_6">
+        <inertial>
+            <origin xyz="-0.0457252947244 -0.033028678678 -0.0133935101319" rpy="0 0 0" />
+            <mass value="0.043" />
+            <inertia ixx="1.83365490405e-05" ixy="-4.92317099978e-06" ixz="3.71429209035e-06" iyy="3.10328166335e-05" iyz="-2.04004595836e-06" izz="2.7645915658e-05" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="meshes/flexiv_link_6.stl" scale="1 1 1" />
+            </geometry>
+            <material name="flexiv_teleop_mesh">
+                <color rgba="0.72 0.72 0.72 1" />
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="meshes/flexiv_link_6.stl" scale="1 1 1" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="rail_carriage_link">
+        <inertial>
+            <origin xyz="-0.003632 0.002443 -0.033939" rpy="0 0 0" />
+            <mass value="0.042405" />
+            <inertia ixx="1.9944387e-5" ixy="-2.015249e-6" ixz="-4.241811e-6" iyy="3.3750086e-5" iyz="1.370719e-6" izz="1.9264886e-5" />
+        </inertial>
+        <visual>
+            <origin xyz="-0.047 0.00145 -0.11480" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="meshes/GripperRight.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+            <material name="flexiv_teleop_mesh">
+                <color rgba="0.72 0.72 0.72 1" />
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="-0.047 0.00145 -0.11480" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="meshes/GripperRight.stl" scale="0.001 0.001 0.001" />
+            </geometry>
+        </collision>
+    </link>
+    <joint name="joint_1" type="revolute">
+        <parent link="base_link" />
+        <child link="link_1" />
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <axis xyz="0 0 1" />
+        <limit lower="-3.14159" upper="3.14159" effort="1" velocity="1" />
+    </joint>
+    <joint name="joint_2" type="revolute">
+        <parent link="link_1" />
+        <child link="link_2" />
+        <origin xyz="0.000130574300606631 0.0149399256994647 0.105023853734996" rpy="0 0 1.5707963267949" />
+        <axis xyz="1 0 0" />
+        <limit lower="-3.14159" upper="3.14159" effort="1" velocity="1" />
+    </joint>
+    <joint name="joint_3" type="revolute">
+        <parent link="link_2" />
+        <child link="link_3" />
+        <origin xyz="0.0175578765488817 -0.000114955516336591 0.102486962967077" rpy="0 0 0" />
+        <axis xyz="0 0 1" />
+        <limit lower="-3.14159" upper="3.14159" effort="1" velocity="1" />
+    </joint>
+    <joint name="joint_4" type="revolute">
+        <parent link="link_3" />
+        <child link="link_4" />
+        <origin xyz="-0.0151351676567868 0.00984254203913448 0.0949747" rpy="0 1.5707963267949 1.5707963267949" />
+        <axis xyz="0 1 0" />
+        <limit lower="-3.14159" upper="3.14159" effort="1" velocity="1" />
+    </joint>
+    <joint name="joint_5" type="revolute">
+        <parent link="link_4" />
+        <child link="link_5" />
+        <origin xyz="-0.0974849293854855 0.0120735844837713 -0.00937919999999989" rpy="-3.14159265358979 0 1.5707963267949" />
+        <axis xyz="0 -1 0" />
+        <limit lower="-3.14159" upper="3.14159" effort="1" velocity="1" />
+    </joint>
+    <joint name="joint_6" type="revolute">
+        <parent link="link_5" />
+        <child link="link_6" />
+        <origin xyz="-0.0154612367383675 -0.0949280431600081 -0.000667273159910339" rpy="-3.14159265358979 0 1.5707963267949" />
+        <axis xyz="0 -1 0" />
+        <limit lower="-3.14159" upper="3.14159" effort="1" velocity="1" />
+    </joint>
+    <joint name="joint_7" type="revolute">
+        <parent link="link_6" />
+        <child link="rail_carriage_link" />
+        <origin xyz="-0.0546971044967246 -0.0367701044967213 0.00756109816304664" rpy="-3.14159265358979 0 1.5707963267949" />
+        <axis xyz="0 0 -1" />
+        <limit lower="-3.14159" upper="3.14159" effort="1" velocity="1" />
+    </joint>
+</robot>

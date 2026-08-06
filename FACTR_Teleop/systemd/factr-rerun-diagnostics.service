@@ -1,0 +1,19 @@
+[Unit]
+Description=FACTR isolated Rerun diagnostics viewer
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/flexiv/FACTR-Server/FACTR_Teleop
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/home/flexiv/FACTR-Server/.rerun-site/rerun_sdk:/home/flexiv/FACTR-Server/.rerun-site
+Environment=FACTR_RERUN_URL=standalone
+Environment=FACTR_RERUN_GRPC_PORT=9877
+Environment=FACTR_RERUN_WEB_PORT=9091
+Environment=FACTR_RERUN_MEMORY_LIMIT=128MiB
+ExecStart=/usr/bin/python3 -m src.factr_fastapi.factr_fastapi.factr_rerun_sidecar
+Restart=on-failure
+RestartSec=1s
+
+[Install]
+WantedBy=default.target
