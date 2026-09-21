@@ -41,15 +41,7 @@ class FactrRizonTeleop(FACTRTeleop):
         self.group_a = MutuallyExclusiveCallbackGroup()
         self.group_b = MutuallyExclusiveCallbackGroup()
 
-        if arm_index == 0:
-            # left arm
-            self.joint_pos_publisher = self.publisher_ = self.create_publisher(JointState, '/joint_pos_left', 10, callback_group=self.group_a)
-        else:
-            # right arm
-            self.joint_pos_publisher = self.publisher_ = self.create_publisher(JointState, '/joint_pos_right', 10, callback_group=self.group_a)
-
-        self.create_timer(0.002, self.publish_joint_pos, callback_group=self.group_b)
-        # publish joint_pos every 2ms
+        self.joint_pos_publisher = self.publisher_ = self.create_publisher(JointState, '/joint_pos_left', 10, callback_group=self.group_a)
 
         self.index = arm_index
         self._last_published_joint_sequence = 0
@@ -70,6 +62,10 @@ class FactrRizonTeleop(FACTRTeleop):
         Additional control loop feature: update the joint positions of one of the leader arms (left or right), runs at 500Hz
         """
         super().control_loop_callback()
+        # Publish after the write so position and effort describe the same
+        # successful control iteration. Duplicate/stale reads are suppressed by
+        # the raw-state sequence check in publish_joint_pos().
+        self.publish_joint_pos()
 
 
     def publish_joint_pos(self):
@@ -95,6 +91,7 @@ class FactrRizonTeleop(FACTRTeleop):
         msg.position = positions
 
         msg.velocity = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] 
+        msg.effort = self._last_commanded_torque_nm.tolist()
 
         if len(positions) < 8:
             self.get_logger().info("motors not ready", throttle_duration_sec=0.5)
@@ -114,12 +111,6 @@ class FactrRizonTeleop(FACTRTeleop):
     def set_up_communication(self):
         pass
         
-    def get_leader_gripper_feedback(self):
-        pass
-    
-    def gripper_feedback(self, leader_gripper_pos, leader_gripper_vel, gripper_feedback):
-        pass
-    
     def update_communication(self, leader_arm_pos, leader_gripper_pos):
         # use publish_joint_pos() instead
         pass

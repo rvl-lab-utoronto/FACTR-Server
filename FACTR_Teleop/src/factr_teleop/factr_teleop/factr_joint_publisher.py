@@ -10,7 +10,7 @@
 #   ros2 run factr_teleop factr_joint_pub --ros-args -p arm_index:=1   # right
 #
 # The ONLY bus write this node ever issues is set_torque_mode(False) at startup; every
-# timer tick is a pure read (GroupSyncRead). It never calls set_torque_mode(True), so
+# timer tick is a pure read (Fast Sync Read). It never calls set_torque_mode(True), so
 # no motor is ever energized. Calibration (_get_dynamixel_offsets) and the read+publish
 # math (get_leader_joint_states) are copied verbatim from FACTRTeleop so the numbers are
 # identical to full teleop.
@@ -68,7 +68,11 @@ class FactrJointPublisher(Node):
 
         first_id = int(self.config["dynamixel"].get("first_id", 1))
         joint_ids = np.arange(self.num_motors) + first_id
-        self.driver = DynamixelDriver(joint_ids, self.servo_types, self.dynamixel_port)
+        self.driver = DynamixelDriver(
+            joint_ids,
+            self.servo_types,
+            self.dynamixel_port,
+        )
         # Torque stays off (read-only). The driver ctor already attempted this; retry
         # but TOLERATE failure (a servo may report an error flag or already be off) so
         # we still proceed to READ positions rather than aborting the node.

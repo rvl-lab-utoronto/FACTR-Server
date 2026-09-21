@@ -4,21 +4,21 @@ dynamixel_small:
   # USB port name given by the command: ls /dev/serial/by-id/
   dynamixel_port: "usb-FTDI_USB__-__Serial_Converter_FTAA0B2I-if00-port0" # edited on Jun 17
   # Dynamixel IDs wired to the small board (order that readings/commands are indexed)
-  ids: [1, 3, 5, 6, 7, 8]
+  ids: [1]
   # Servo types, one per id (same order as ids)
-  servo_types: ["XC330_M288_T", "XC330_M288_T", "XC330_M288_T", "XC330_M288_T", "XC330_M288_T", "XL330_M288_T"]
+  servo_types: ["XC330_M288_T"]
 
 dynamixel_big:
   # USB port name given by the command: ls /dev/serial/by-id/
   dynamixel_port: "usb-FTDI_USB__-__Serial_Converter_FTA2U2FX-if00-port0"
   # Dynamixel IDs wired to the big board (order that readings/commands are indexed)
-  ids: [2, 4]
+  ids: [2, 3, 4, 5, 6, 7, 8]
   # Servo types, one per id (same order as ids)
-  servo_types: ["XM430_W210_T", "XM430_W210_T"]
+  servo_types: ["XM430_W210_T", "XC330_T288_T", "XM430_W210_T", "XC330_T288_T", "XC330_T288_T", "XC330_T288_T", "XC330_T288_T"]
 
 arm_teleop:
   # URDF used for creating leader arm dynamics model to compute gravity compensation
-  leader_urdf: "flexiv_teleop_neg45_x_lighter_servo_8.urdf"
+  leader_urdf: "flexiv_teleop_right.urdf"
   num_arm_joints: 7
   arm_joint_limits_max: [2.8798, 2.3562, 3.0543, 2.7751, 3.0543, 4.6251, 3.0543]
   arm_joint_limits_min: [-2.8798, -2.3562, -3.0543, -1.9548, -3.0543, -1.4835, -3.0543]
@@ -39,43 +39,31 @@ controller:
   telemetry_enabled: true
   torque_feedback:
     enable: True
-    # Gravity-only tuning: suppress every non-gravity arm-torque term.
-    gain: 0.0
-    damping: 0.0
-    motor_scalar: 94.5652173913
+    # Physical gain, damping, and motor scalar are injected by DFC.
     # Staleness cutoff [s] and per-joint clip [Nm] for the follower external-torque
     # feed (/factr_force_feedback_<side>): the control loop feeds zeros once the
     # newest sample is older than `timeout`, and each accepted torque is clipped to
     # +-max_torque before use.
     timeout: 0.25
     max_torque: 10.0
-  # Independent activation ramps. Each scales only its own configured torque term.
-  grav_comp_gain_ramp_time: 1.0
-  force_feedback_gain_ramp_time: 1.0
   gravity_comp:
     enable: True
-    # Physical gravity-compensation strength; the runtime grav-comp activation
-    # ramp above is independent of force feedback.
-    gain: 0.8
+    # Physical gain and activation-ramp time are injected by DFC.
   null_space_regulation:
-    enable: false
-    null_space_joint_target: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] # TODO: edit this to home pose of follower arm
-    kp: 0.0
-    kd: 0.0
+    enable: true
+    # Disabled startup fallback; managed collection replaces it with task.start_qpos.
+    # Gain-ramp time and PD gains are injected by DFC.
   static_friction_comp:
     enable_speed: 0.9
-    gain: 0.0
+    # Gain is injected by DFC.
   joint_limit_barrier:
     # Disabled: no leader-side end-stop repulsion (no follower-range protection from FACTR).
     enable: false
-    kp: 0.0
-    kd: 0.0
+    # PD gains are injected by DFC.
   joint_position_control:
     interpolation_step_size: 0.5
-    kp: 1.03561658022
-    kd: 0.04315069084
+    # PD gains are injected by DFC.
 
-  gripper_feedback:
-    enable: False
-    gain: 0.28328611898
-    ema_beta: 0.95
+  gripper_spring:
+    enable: True
+    # Stiffness, damping, and maximum torque are injected by DFC.

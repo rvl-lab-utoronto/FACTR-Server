@@ -53,12 +53,159 @@ def test_group_sync_read_retains_status_packet_error_byte():
     assert read.error_dict == {1: 0x80}
 
 
+def test_fast_sync_read_retains_all_payloads_and_status_error_bytes():
+    class PacketHandler:
+        @staticmethod
+        def getProtocolVersion():
+            return 2.0
+
+        @staticmethod
+        def syncReadTx(_port, start, length, ids, count, fast):
+            assert (start, length, ids, count, fast) == (128, 2, [1, 2], 2, True)
+            return 0
+
+        @staticmethod
+        def fastSyncReadRx(_port, dxl_id, length):
+            assert dxl_id == 0xFE
+            assert length == 12
+            # Each aggregate block is ERR, ID, payload, CRC16.
+            return [0x80, 1, 10, 11, 0, 0, 0x00, 2, 20, 21, 0, 0], 0, 0
+
+    read = DiagnosticGroupSyncRead(object(), PacketHandler(), 128, 2)
+    assert read.addParam(1) is True
+    assert read.addParam(2) is True
+
+    assert read.fastSyncRead() == 0
+    assert read.error_dict == {1: 0x80, 2: 0x00}
+    assert read.data_dict == {1: bytearray([10, 11]), 2: bytearray([20, 21])}
+
+
+def test_fast_sync_read_rejects_duplicate_or_missing_device_ids():
+    class PacketHandler:
+        @staticmethod
+        def getProtocolVersion():
+            return 2.0
+
+        @staticmethod
+        def syncReadTx(*_args):
+            return 0
+
+        @staticmethod
+        def fastSyncReadRx(*_args):
+            return [0, 1, 10, 11, 0, 0, 0, 1, 20, 21, 0, 0], 0, 0
+
+    read = DiagnosticGroupSyncRead(object(), PacketHandler(), 128, 2)
+    read.addParam(1)
+    read.addParam(2)
+
+    assert read.fastSyncRead() == -3002
+    assert read.last_result is False
+
+
+def test_driver_always_uses_fast_sync_read():
+    class Read:
+        normal_calls = 0
+        fast_calls = 0
+
+        def txRxPacket(self):
+            self.normal_calls += 1
+            return 101
+
+        def fastSyncRead(self):
+            self.fast_calls += 1
+            return 202
+
+    driver = _driver_without_hardware()
+    driver._groupSyncRead = Read()
+
+    assert driver._read_state_packet() == 202
+    assert driver._groupSyncRead.normal_calls == 0
+    assert driver._groupSyncRead.fast_calls == 1
+
+
+def test_write_alert_is_recorded_but_not_treated_as_instruction_failure():
+    driver = _driver_without_hardware()
+
+    class PacketHandler:
+        @staticmethod
+        def getTxRxResult(_result):
+            return "unused"
+
+        @staticmethod
+        def getRxPacketError(_error):
+            return "unused"
+
+    driver._packetHandler = PacketHandler()
+    driver._check_write_result("set torque mode", 9, 0, 0x80)
+
+    event = driver.diagnostics_snapshot()["events"][0]
+    assert event["kind"] == "status_alert"
+    assert event["servo_ids"] == [9]
+    assert event["status_error_bytes"] == {"9": 0x80}
+
+
+def test_write_instruction_error_still_fails_with_details():
+    driver = _driver_without_hardware()
+
+    class PacketHandler:
+        @staticmethod
+        def getTxRxResult(_result):
+            return "Success"
+
+        @staticmethod
+        def getRxPacketError(_error):
+            return "Data range error"
+
+    driver._packetHandler = PacketHandler()
+    with pytest.raises(RuntimeError, match=r"ID 9.*status=0x84"):
+        driver._check_write_result("set torque mode", 9, 0, 0x84)
+
+
+def test_startup_write_retries_transient_communication_failure():
+    driver = _driver_without_hardware()
+    driver._portHandler = object()
+
+    class PacketHandler:
+        results = iter([(-3001, 0), (-3001, 0), (0, 0)])
+        calls = 0
+
+        @classmethod
+        def write1ByteTxRx(cls, *_args):
+            cls.calls += 1
+            return next(cls.results)
+
+    driver._packetHandler = PacketHandler()
+    driver._write_1_byte_with_retry("set torque mode", 1, 64, 1)
+
+    snapshot = driver.diagnostics_snapshot()
+    assert PacketHandler.calls == 3
+    assert snapshot["comm_retry_count"] == 2
+    assert snapshot["comm_failure_count"] == 0
+    assert snapshot["events"][0]["kind"] == "communication_retry"
+
+
 def test_low_latency_packet_deadline_matches_one_ms_ftdi_setting():
     port = LowLatencyPortHandler.__new__(LowLatencyPortHandler)
     port.tx_time_per_byte = 0.0025  # 4 Mbps, 10 serial bits per byte, in ms
-    port.setPacketTimeout(114)      # six 8-byte status packets
+    port.setPacketTimeout(126)      # six 10-byte status packets
 
-    assert port.packet_timeout == pytest.approx(10.285)
+    assert port.packet_timeout == pytest.approx(10.315)
+
+
+def test_current_telemetry_uses_same_conversion_as_torque_commands():
+    driver = _driver_without_hardware()
+    driver._present_currents = np.array([116, -372])
+    driver._last_goal_current_raw = np.array([58, -186])
+    driver.torque_to_current_map = np.array([1158.73, 1000 / 2.69])
+
+    np.testing.assert_allclose(
+        driver.current_estimated_torque(),
+        driver._present_currents / driver.torque_to_current_map,
+    )
+    np.testing.assert_allclose(
+        driver.commanded_torque(),
+        driver._last_goal_current_raw / driver.torque_to_current_map,
+    )
 
 
 def test_default_read_attempts_once_then_returns_control_to_caller():
@@ -66,7 +213,7 @@ def test_default_read_attempts_once_then_returns_control_to_caller():
         error_dict = {}
         calls = 0
 
-        def txRxPacket(self):
+        def fastSyncRead(self):
             self.calls += 1
             return -3001
 
@@ -83,7 +230,8 @@ def test_default_read_attempts_once_then_returns_control_to_caller():
 def test_records_raw_reads_retries_jump_and_alert_without_extra_bus_reads():
     driver = _driver_without_hardware()
     driver._record_successful_read(
-        "control", np.array([0, 0]), np.array([1, 2]), [], {1: 0, 2: 0}
+        "control", np.array([0, 0]), np.array([1, 2]), [], {1: 0, 2: 0},
+        currents=np.array([3, -4]),
     )
     driver._record_successful_read(
         "publication",
@@ -96,6 +244,7 @@ def test_records_raw_reads_retries_jump_and_alert_without_extra_bus_reads():
     snapshot = driver.diagnostics_snapshot()
 
     assert snapshot["latest_reads"]["control"]["raw_position_ticks"] == [0, 0]
+    assert snapshot["latest_reads"]["control"]["raw_present_current"] == [3, -4]
     assert snapshot["latest_reads"]["publication"]["raw_position_ticks"] == [0, 2048]
     assert snapshot["comm_retry_count"] == 1
     assert snapshot["position_jump_count"] == 1

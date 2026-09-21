@@ -159,6 +159,7 @@ def test_rerun_logs_retained_dynamixel_event_only_once():
             "control": {
                 "raw_position_ticks": [10],
                 "raw_velocity_ticks": [2],
+                "raw_present_current": [3],
             }
         },
         "events": [{
@@ -238,11 +239,16 @@ def _relay(side="left"):
         telemetry_version=0,
         grav_comp_gain=0.0,
         grav_comp_gain_target=0.0,
+        leader_torque_gain=0.0,
+        leader_torque_gain_target=0.0,
+        leader_torque_enabled=False,
         force_feedback_gain=0.0,
         force_feedback_gain_target=0.0,
         force_feedback_pub=FakePublisher(),
+        gripper_feedback_pub=FakePublisher(),
         grav_comp_gain_pub=FakePublisher(),
         force_feedback_gain_pub=FakePublisher(),
+        null_space_control_pub=FakePublisher(),
     )
     for name in (
         "stream",
@@ -250,9 +256,12 @@ def _relay(side="left"):
         "_handle_inbound_frame",
         "_telemetry_payload",
         "_publish_force_feedback",
+        "_publish_gripper_feedback",
         "post_force_feedback",
+        "post_gripper_feedback",
         "enable_force_feedback",
         "disable_force_feedback",
+        "set_null_space",
         "enable_grav_comp",
         "disable_grav_comp",
         "get_status",
@@ -260,6 +269,8 @@ def _relay(side="left"):
         "_publish_force_feedback_gain_target",
         "_update_grav_comp_gain_state",
         "_update_force_feedback_gain_state",
+        "_update_leader_torque_gain_state",
+        "_update_leader_torque_enabled_state",
     ):
         setattr(relay, name, MethodType(getattr(FactrAPI, name), relay))
     logger = FakeLogger()
@@ -273,19 +284,26 @@ def _telemetry():
         name: [0.0, 0.1, 0.2]
         for name in (
             "raw_q_rad", "model_q_rad", "model_dq_rad_s", "home_error_rad",
-            "joint_offsets_rad", "model_signs", "limit_torque_nm",
+            "joint_offsets_rad", "model_signs", "null_space_target_rad",
+            "limit_torque_nm",
             "null_torque_nm", "gravity_torque_nm", "friction_torque_nm",
-            "force_feedback_torque_nm", "applied_torque_nm",
+            "force_feedback_torque_nm", "calculated_torque_nm",
+            "commanded_torque_nm", "present_current_raw",
+            "current_estimated_torque_nm", "applied_torque_nm",
         )
     }
     return {
         "stamp_monotonic_ns": 123,
         **vectors,
+        "null_space_gain": 0.4,
         "grav_comp_gain": 0.2,
         "grav_comp_gain_target": 1.0,
-        "friction_gain": 0.2,
+        "friction_gain": [0.2, 0.4, 0.6],
         "force_feedback_gain": 0.3,
         "force_feedback_gain_target": 0.0,
+        "leader_torque_gain": 0.2,
+        "leader_torque_gain_target": 1.0,
+        "leader_torque_enabled": True,
     }
 
 
@@ -329,6 +347,20 @@ def test_stream_republishes_inbound_force_feedback():
     assert relay.get_logger().warnings == []
 
 
+def test_stream_republishes_inbound_gripper_feedback():
+    relay = _relay()
+    websocket = FakeWebSocket(inbound=[
+        json.dumps({
+            "type": "gripper_feedback", "side": "left", "force_n": -12.5,
+        }),
+    ])
+
+    asyncio.run(relay.stream(websocket))
+
+    assert [m.data for m in relay.gripper_feedback_pub.msgs] == [-12.5]
+    assert relay.get_logger().warnings == []
+
+
 def test_inbound_frame_rejects_malformed_frames():
     relay = _relay()
     bad_frames = [
@@ -339,6 +371,8 @@ def test_inbound_frame_rejects_malformed_frames():
         json.dumps({"type": "force_feedback", "tau": []}),            # empty tau
         json.dumps({"type": "force_feedback", "tau": [1.0, float("nan")]}),  # non-finite
         json.dumps({"type": "force_feedback", "space": "tcp", "tau": [0.0] * 6}),  # future space
+        json.dumps({"type": "gripper_feedback"}),                 # missing force
+        json.dumps({"type": "gripper_feedback", "force_n": float("nan")}),
     ]
     for frame in bad_frames:
         relay._handle_inbound_frame(frame)
@@ -365,6 +399,19 @@ def test_post_force_feedback_publishes_and_acks():
     assert [list(m.effort) for m in relay.force_feedback_pub.msgs] == [[0.0, 1.0, -2.0]]
 
 
+def test_post_gripper_feedback_publishes_and_acks():
+    relay = _relay(side="right")
+    from factr_fastapi.factr_api import GripperFeedback
+
+    ack = asyncio.run(
+        relay.post_gripper_feedback(GripperFeedback(force_n=-7.25))
+    )
+
+    assert ack.side == "right"
+    assert ack.force_n == -7.25
+    assert [m.data for m in relay.gripper_feedback_pub.msgs] == [-7.25]
+
+
 def test_force_feedback_toggle_controls_only_its_independent_gain():
     relay = _relay()
     frame = json.dumps({"type": "force_feedback", "tau": [1.0, 2.0]})
@@ -378,6 +425,26 @@ def test_force_feedback_toggle_controls_only_its_independent_gain():
     assert relay.force_feedback_gain_target == 1.0
     assert relay.force_feedback_gain_pub.msgs[-1].data == 1.0
     assert relay.grav_comp_gain_target == 0.0
+
+
+def test_null_space_control_publishes_target_and_enable_atomically():
+    from factr_fastapi.factr_api import NullSpaceControl
+
+    relay = _relay(side="right")
+    command = NullSpaceControl(
+        enabled=True,
+        target_dfc_rad=[0.1, -0.2, 0.3],
+    )
+
+    ack = asyncio.run(relay.set_null_space(command))
+
+    assert ack.side == "right"
+    assert ack.enabled is True
+    assert ack.target_dfc_rad == [0.1, -0.2, 0.3]
+    assert len(relay.null_space_control_pub.msgs) == 1
+    assert list(relay.null_space_control_pub.msgs[0].data) == [
+        1.0, 0.1, -0.2, 0.3,
+    ]
 
     disabled = asyncio.run(relay.disable_force_feedback())
     assert disabled.force_feedback_enabled is False
@@ -394,12 +461,14 @@ def test_grav_comp_toggle_does_not_change_feedback_gain():
     enabled = asyncio.run(relay.enable_grav_comp())
     assert enabled.gain_target == 1.0
     assert relay.grav_comp_gain_target == 1.0
+    assert relay.leader_torque_gain_target == 1.0
     assert relay.grav_comp_gain_pub.msgs[-1].data == 1.0
     assert relay.force_feedback_gain_target == 1.0
 
     disabled = asyncio.run(relay.disable_grav_comp())
     assert disabled.gain_target == 0.0
     assert relay.grav_comp_gain_target == 0.0
+    assert relay.leader_torque_gain_target == 0.0
     assert relay.force_feedback_gain_target == 1.0
 
 
@@ -412,16 +481,24 @@ def test_telemetry_feeds_websocket_cache():
 
     assert relay.telemetry == {**payload, "dynamixel": []}
     assert relay.telemetry_version == 1
+    assert relay.leader_torque_gain == 0.2
+    assert relay.leader_torque_gain_target == 1.0
+    assert relay.leader_torque_enabled is True
 
 
 def test_independent_gains_feed_status_cache():
     relay = _relay()
+    relay.leader_torque_gain_target = 1.0
 
     relay._update_grav_comp_gain_state(SimpleNamespace(data=0.75))
     relay._update_force_feedback_gain_state(SimpleNamespace(data=1.0))
+    relay._update_leader_torque_gain_state(SimpleNamespace(data=0.75))
+    relay._update_leader_torque_enabled_state(SimpleNamespace(data=True))
     status = asyncio.run(relay.get_status())
 
     assert status.grav_comp_gain == 0.75
     assert status.force_feedback_gain == 1.0
     assert status.grav_comp_enabled is False
     assert status.force_feedback_enabled is True
+    assert status.leader_torque_state == "enabling"
+    assert status.leader_torque_enabled is True

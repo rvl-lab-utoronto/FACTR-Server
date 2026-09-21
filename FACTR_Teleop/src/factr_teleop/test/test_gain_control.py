@@ -1,6 +1,7 @@
 import numpy as np
 
 from factr_teleop.gain_control import compose_arm_torque
+from factr_teleop.gain_control import null_space_pd_objective
 from factr_teleop.gain_control import ramp_gain
 
 
@@ -12,14 +13,22 @@ def test_gravity_and_feedback_gains_are_independent():
     feedback = np.array([100.0, 200.0])
 
     no_gravity = compose_arm_torque(
-        limit, null, gravity, friction, feedback, 0.0, 1.0
+        limit, null, gravity, friction, feedback, 1.0, 0.0, 1.0, 1.0
     )
     no_feedback = compose_arm_torque(
-        limit, null, gravity, friction, feedback, 1.0, 0.0
+        limit, null, gravity, friction, feedback, 1.0, 1.0, 0.0, 1.0
+    )
+    no_null = compose_arm_torque(
+        limit, null, gravity, friction, feedback, 0.0, 0.0, 0.0, 1.0
+    )
+    master_off = compose_arm_torque(
+        limit, null, gravity, friction, feedback, 1.0, 1.0, 1.0, 0.0
     )
 
     np.testing.assert_allclose(no_gravity, limit + null + feedback)
     np.testing.assert_allclose(no_feedback, limit + null + gravity + friction)
+    np.testing.assert_allclose(no_null, limit)
+    np.testing.assert_array_equal(master_off, np.zeros_like(limit))
 
 
 def test_gain_ramp_clamps_and_keeps_its_own_clock():
@@ -29,3 +38,15 @@ def test_gain_ramp_clamps_and_keeps_its_own_clock():
     gain, stamp = ramp_gain(gain, 0.0, stamp, 2.0, 11.5)
     assert gain == 0.0
     assert stamp == 11.5
+
+
+def test_null_space_pd_objective_biases_base_joint():
+    objective = null_space_pd_objective(
+        q_error=np.array([2.0, 2.0]),
+        joint_velocity=np.array([1.0, 1.0]),
+        kp=0.5,
+        kd=0.1,
+        torque_gain=np.array([1.5, 1.0]),
+    )
+
+    np.testing.assert_allclose(objective, [-1.65, -1.1])

@@ -71,6 +71,7 @@ class FactrRizonTeleopDualBoard(FACTRTeleopDualBase):
                 f"FACTR TELEOP {self.name}: skipped control tick after {exc}",
                 throttle_duration_sec=1.0,
             )
+            self._disable_leader_torque_after_read_failure()
             return False
 
         torque_l, torque_gripper = self.joint_limit_barrier(
@@ -90,25 +91,31 @@ class FactrRizonTeleopDualBoard(FACTRTeleopDualBase):
                 external_joint_torque, leader_arm_vel
             )
 
-        # if self.enable_gripper_feedback:
-        #     gripper_feedback = self.get_leader_gripper_feedback()
-        #     torque_gripper += self.gripper_feedback(leader_gripper_pos, leader_gripper_vel, gripper_feedback)
-
-        grav_gain, feedback_gain = self._update_component_gains()
+        null_gain, grav_gain, feedback_gain, leader_gain = self._update_component_gains()
+        if self.enable_gripper_spring:
+            torque_gripper += self.gripper_spring_torque(
+                leader_gripper_pos, leader_gripper_vel
+            )
         torque_arm = compose_arm_torque(
             torque_l,
             torque_null,
             torque_gravity,
             torque_friction,
             torque_feedback,
+            null_gain,
             grav_gain,
             feedback_gain,
+            leader_gain,
         )
+        commanded_torque = self._apply_leader_torque(
+            torque_arm, leader_gain * torque_gripper
+        )
+        self._last_commanded_torque_nm = commanded_torque.copy()
         self._capture_enable_tick(
             leader_arm_pos, leader_arm_vel, torque_l, torque_null,
-            torque_gravity, torque_friction, torque_feedback, torque_arm, grav_gain,
+            torque_gravity, torque_friction, torque_feedback, torque_arm,
+            commanded_torque, grav_gain,
         )
-        self.set_leader_joint_torque(torque_arm, torque_gripper)
         self.publish_joint_pos()
         return True
 
@@ -136,6 +143,7 @@ class FactrRizonTeleopDualBoard(FACTRTeleopDualBase):
         msg.position = positions
 
         msg.velocity = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] 
+        msg.effort = self._last_commanded_torque_nm.tolist()
 
         if len(positions) > 8:
             self.get_logger().info("motors not ready")
@@ -147,12 +155,6 @@ class FactrRizonTeleopDualBoard(FACTRTeleopDualBase):
     def set_up_communication(self):
         pass
         
-    def get_leader_gripper_feedback(self):
-        pass
-
-    def gripper_feedback(self, leader_gripper_pos, leader_gripper_vel, gripper_feedback):
-        pass
-
     def update_communication(self, leader_arm_pos, leader_gripper_pos):
         # use publish_joint_pos() instead
         pass

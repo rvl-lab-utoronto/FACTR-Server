@@ -3,17 +3,15 @@ name: left
 dynamixel:
   # USB port name given by the command: ls /dev/serial/by-id/
   dynamixel_port: "usb-FTDI_USB__-__Serial_Converter_FTAKRPX7-if00-port0"
-  # First physical servo ID; must be 1 (IDs 1-8) or 9 (IDs 9-16)
-  id_start: 1
   # Servo types
   servo_types: [
-    "XC330_T288_T", "XM430_W210_T", "XC330_T288_T", "XM430_W210_T", 
+    "XM430_W210_T", "XM430_W210_T", "XC330_T288_T", "XM430_W210_T", 
     "XC330_T288_T", "XC330_T288_T", "XC330_T288_T", "XC330_T288_T",
   ]
 
 arm_teleop:
   # URDF used for creating leader arm dynamics model to compute gravity compensation
-  leader_urdf: "flexiv_teleop_pos45_x_lighter.urdf"
+  leader_urdf: "flexiv_teleop_left.urdf"
   num_arm_joints: 7
   # Follower joint limits, from Rizon4s_synched.urdf (Flexiv Rizon 4s)
   arm_joint_limits_max: [2.8798, 2.3562, 3.0543, 2.7751, 3.0543, 4.6251, 3.0543]
@@ -35,43 +33,31 @@ controller:
     # Capability is on for both leaders; the API relay's runtime gate defaults
     # off and is controlled by /enable_force_feedback_left.
     enable: True
-    # Gravity-only tuning: suppress every non-gravity arm-torque term.
-    gain: 0.0
-    damping: 0.0
-    motor_scalar: 94.5652173913
+    # Physical gain, damping, and motor scalar are injected by DFC.
     # Staleness cutoff [s] and per-joint clip [Nm] for the follower external-torque
     # feed (/factr_force_feedback_<side>): the control loop feeds zeros once the
     # newest sample is older than `timeout`, and each accepted torque is clipped to
     # +-max_torque before use.
     timeout: 0.25
     max_torque: 10.0
-  # Independent activation ramps. Each scales only its own configured torque term.
-  grav_comp_gain_ramp_time: 1.0
-  force_feedback_gain_ramp_time: 1.0
   gravity_comp:
     enable: True
-    # Physical gravity-compensation strength; the runtime grav-comp activation
-    # ramp above is independent of force feedback.
-    gain: 0.8
+    # Physical gain and activation-ramp time are injected by DFC.
   null_space_regulation:
-    enable: false
-    null_space_joint_target: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] # TODO: edit this to home pose of follower arm
-    kp: 0.0
-    kd: 0.0
+    enable: true
+    # Disabled startup fallback; managed collection replaces it with task.start_qpos.
+    # Gain-ramp time and PD gains are injected by DFC.
   static_friction_comp:
-    enable_speed: 0.9
-    gain: 0.0
+    enable_speed: 10
+    # Gain is injected by DFC.
   joint_limit_barrier:
     # Disabled: no leader-side end-stop repulsion (no follower-range protection from FACTR).
     enable: false
-    kp: 0.0
-    kd: 0.0
+    # PD gains are injected by DFC.
   joint_position_control:
     interpolation_step_size: 0.5
-    kp: 1.03561658022
-    kd: 0.04315069084
+    # PD gains are injected by DFC.
 
-  gripper_feedback:
-    enable: False
-    gain: 0.28328611898
-    ema_beta: 0.95
+  gripper_spring:
+    enable: True
+    # Stiffness, damping, and maximum torque are injected by DFC.

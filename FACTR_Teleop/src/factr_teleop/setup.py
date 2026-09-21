@@ -16,7 +16,7 @@ setup(
         # two levels up from this setup.py (src/factr_teleop/).
         (os.path.join('share', package_name, 'launch'), glob('../../launch/*.py')),
     ],
-    install_requires=['setuptools'],
+    install_requires=['setuptools', 'dynamixel-sdk==4.0.5'],
     zip_safe=True,
     maintainer='Jason Jingzhou Liu and Yulong Li',
     maintainer_email='liujason@cmu.edu',

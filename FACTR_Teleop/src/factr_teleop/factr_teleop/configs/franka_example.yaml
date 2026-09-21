@@ -39,7 +39,7 @@ controller:
     enable: True
     gain: 0.85
   null_space_regulation:
-    null_space_joint_target: [0.0, -0.7854, 0.0, -2.356, 0.0, 1.57, 0.0, 0.0]
+    null_space_joint_target: [0.0, -0.7854, 0.0, -2.356, 0.0, 1.57, 0.0]
     kp: 0.1
     kd: 0.01
   static_friction_comp:
@@ -53,9 +53,6 @@ controller:
     kp: 1.03561658022
     kd: 0.04315069084
 
-  gripper_feedback:
+  gripper_spring:
     enable: True
-    gain: 0.28328611898
-    ema_beta: 0.95
-
-
+    # Stiffness, damping, and maximum torque are injected by DFC.

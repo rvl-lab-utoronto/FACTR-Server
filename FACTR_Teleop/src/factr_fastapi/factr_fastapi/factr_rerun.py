@@ -47,15 +47,24 @@ _CAPTURE_FIELDS = (
     "home_error_rad",
     "joint_offsets_rad",
     "model_signs",
+    "null_space_target_rad",
     "limit_torque_nm",
     "null_torque_nm",
     "gravity_torque_nm",
     "friction_torque_nm",
     "force_feedback_torque_nm",
+    "calculated_torque_nm",
+    "commanded_torque_nm",
+    "present_current_raw",
+    "current_estimated_torque_nm",
     "applied_torque_nm",
 )
 
 _GAIN_FIELDS = (
+    "null_space_gain",
+    "leader_torque_gain",
+    "leader_torque_gain_target",
+    "leader_torque_enabled",
     "grav_comp_gain",
     "grav_comp_gain_target",
     "friction_gain",
@@ -70,12 +79,21 @@ _TELEMETRY_TITLES = {
     "home_error_rad": "Home error (rad)",
     "joint_offsets_rad": "Joint offsets (rad)",
     "model_signs": "Model signs",
+    "null_space_target_rad": "Null-space target (rad)",
     "limit_torque_nm": "Limit torque (Nm)",
     "null_torque_nm": "Null-space torque (Nm)",
     "gravity_torque_nm": "Gravity torque (Nm)",
     "friction_torque_nm": "Friction torque (Nm)",
     "force_feedback_torque_nm": "Force-feedback torque (Nm)",
-    "applied_torque_nm": "Applied torque (Nm)",
+    "calculated_torque_nm": "Calculated torque before actuator limits (Nm)",
+    "commanded_torque_nm": "Commanded torque after actuator limits (Nm)",
+    "present_current_raw": "Measured Present Current (raw register units)",
+    "current_estimated_torque_nm": "Current-derived torque estimate (Nm)",
+    "applied_torque_nm": "Legacy calculated torque alias (Nm)",
+    "null_space_gain": "Null-space gain",
+    "leader_torque_gain": "Master leader-torque gain",
+    "leader_torque_gain_target": "Master leader-torque target",
+    "leader_torque_enabled": "Dynamixel torque enabled",
     "grav_comp_gain": "Gravity-compensation gain",
     "grav_comp_gain_target": "Gravity-compensation gain target",
     "friction_gain": "Static-friction gain",
@@ -90,10 +108,14 @@ _READING_FIELDS = (
     "raw_q_rad",
     "joint_offsets_rad",
     "model_signs",
+    "null_space_target_rad",
 )
 
 _TORQUE_FIELDS = (
-    "applied_torque_nm",
+    "calculated_torque_nm",
+    "commanded_torque_nm",
+    "current_estimated_torque_nm",
+    "present_current_raw",
     "force_feedback_torque_nm",
     "gravity_torque_nm",
     "friction_torque_nm",
@@ -114,6 +136,7 @@ _STATUS_DYNAMIXEL_VIEWS = (
 _MONITORING_DYNAMIXEL_VIEWS = (
     ("dynamixel/control/raw_position_ticks", "Control-read raw position (ticks)"),
     ("dynamixel/control/raw_velocity_ticks", "Control-read raw velocity (ticks)"),
+    ("dynamixel/control/raw_present_current", "Control-read Present Current (raw)"),
 )
 
 _DYNAMIXEL_VIEWS = _STATUS_DYNAMIXEL_VIEWS + _MONITORING_DYNAMIXEL_VIEWS
@@ -352,9 +375,10 @@ class FactrRerunPublisher:
             for field in _GAIN_FIELDS:
                 value = payload.get(field)
                 if value is not None:
+                    values = value if isinstance(value, list) else [value]
                     self._rec.log(
                         f"factr/{side}/telemetry/{field}",
-                        self._rr.Scalars([float(value)]),
+                        self._rr.Scalars([float(item) for item in values]),
                     )
             self._log_dynamixel(side, payload.get("dynamixel") or [])
         except Exception:  # noqa: BLE001 - never propagate into the ROS callback
@@ -381,7 +405,9 @@ class FactrRerunPublisher:
             return [value for _, value in sorted(pairs)]
 
         for source in ("control",):
-            for field in ("raw_position_ticks", "raw_velocity_ticks"):
+            for field in (
+                "raw_position_ticks", "raw_velocity_ticks", "raw_present_current"
+            ):
                 values = ordered_read_values(source, field)
                 if values:
                     self._rec.log(

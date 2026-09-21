@@ -14,15 +14,17 @@ import subprocess
 import numpy as np
 import pinocchio as pin
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor, wait
 
 from rclpy.node import Node
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Float64, String
+from std_msgs.msg import Bool, Float64, Float64MultiArray, String
 from python_utils.utils import get_workspace_root
-from .angles import periodic_joint_error
-from .gain_control import compose_arm_torque, ramp_gain
-from .leader_config import load_leader_model
+from .angles import periodic_joint_error, resolve_null_space_target
+from .gain_control import compose_arm_torque, null_space_pd_objective, ramp_gain
+from .gripper_feedback import torsional_spring_torque_nm
+from .leader_config import apply_control_gains, load_leader_model
 from .raw_joint_state import RawJointStateCache
 from .dynamixel.driver import DynamixelDriver, DynamixelReadError
 
@@ -86,6 +88,7 @@ class FACTRTeleopDualBase(Node, ABC):
         self._control_stop = threading.Event()
         self._control_thread = None
         self._control_thread_error = None
+        self._board_io_executor = None
         
         self._prepare_dynamixel()
         self._raw_joint_state_cache = RawJointStateCache(self.num_motors)
@@ -107,7 +110,21 @@ class FACTRTeleopDualBase(Node, ABC):
             self.num_arm_joints,
             self.initial_match_joint_pos,
         )
+        if self._leader_model.leader_urdf is not None:
+            self.config["arm_teleop"]["leader_urdf"] = (
+                self._leader_model.leader_urdf
+            )
+        apply_control_gains(
+            self.config["controller"], self._leader_model.control_gains
+        )
+        self._last_commanded_torque_nm = np.zeros(self.num_arm_joints)
         self._motor_joint_signs = self._leader_model.motor_signs(self.gripper_sign)
+        self.gripper_spring_open_rad = (
+            self._leader_model.gripper_open_raw * self.gripper_sign
+        )
+        self.gripper_spring_closed_rad = (
+            self._leader_model.gripper_closed_raw * self.gripper_sign
+        )
         self.calibration_joint_pos = self._leader_model.home_factr_q_rad.copy()
         assert self.num_arm_joints == len(self.arm_joint_limits_max) == len(self.arm_joint_limits_min), \
             "num_arm_joints and the length of arm joint limits must be the same"
@@ -133,11 +150,18 @@ class FACTRTeleopDualBase(Node, ABC):
         self.grav_comp_gain = 0.0
         self.grav_comp_gain_target = 0.0
         self._grav_comp_gain_last_update = None
+        self.leader_torque_gain = 0.0
+        self.leader_torque_gain_target = 0.0
+        self._leader_torque_gain_last_update = None
+        self.leader_torque_enabled = False
         self._enable_capture_remaining = 0
         self._enable_capture_samples = []
         # friction compdriver_small
         self.stiction_comp_enable_speed = self.config["controller"]["static_friction_comp"]["enable_speed"]
-        self.stiction_comp_gain = self.config["controller"]["static_friction_comp"]["gain"]
+        self.stiction_comp_gain = np.asarray(
+            self.config["controller"]["static_friction_comp"]["gain"],
+            dtype=float,
+        )
         self.stiction_dither_flag = np.ones((self.num_arm_joints), dtype=bool)
         # joint limit barrier:
         # Set controller.joint_limit_barrier.enable: false to switch off the leader-side
@@ -149,9 +173,19 @@ class FACTRTeleopDualBase(Node, ABC):
         # null space regulation
         null_space_config = self.config["controller"]["null_space_regulation"]
         self.null_space_regulation_enable = null_space_config.get("enable", True)
-        self.null_space_joint_target = np.array(null_space_config["null_space_joint_target"])
+        self.null_space_joint_target = resolve_null_space_target(
+            null_space_config, self.initial_match_joint_pos, self.num_arm_joints
+        )
         self.null_space_kp = null_space_config["kp"]
         self.null_space_kd = null_space_config["kd"]
+        self.null_space_torque_gain = np.asarray(
+            null_space_config["torque_gain"], dtype=float
+        )
+        self.null_space_gain_ramp_time = null_space_config.get("gain_ramp_time", 1.0)
+        self.null_space_gain = 0.0
+        # Null-space regulation is enabled only for an active collection run.
+        self.null_space_gain_target = 0.0
+        self._null_space_gain_last_update = None
         # torque feedback
         self.enable_torque_feedback = self.config["controller"]["torque_feedback"]["enable"]
         self.torque_feedback_gain = self.config["controller"]["torque_feedback"]["gain"]
@@ -168,8 +202,15 @@ class FACTRTeleopDualBase(Node, ABC):
         # configs that predate force feedback keep launching.
         self.torque_feedback_timeout = self.config["controller"]["torque_feedback"].get("timeout", 0.25)
         self.torque_feedback_max = self.config["controller"]["torque_feedback"].get("max_torque", 10.0)
-        # gripper feedback
-        self.enable_gripper_feedback = self.config["controller"]["gripper_feedback"]["enable"]
+        gripper_spring_config = self.config["controller"]["gripper_spring"]
+        self.enable_gripper_spring = gripper_spring_config["enable"]
+        self.gripper_spring_stiffness = gripper_spring_config[
+            "stiffness_nm_per_rad"
+        ]
+        self.gripper_spring_damping = gripper_spring_config[
+            "damping_nm_s_per_rad"
+        ]
+        self.gripper_spring_max_torque = gripper_spring_config["max_torque_nm"]
         
         self.set_up_communication()
 
@@ -194,11 +235,24 @@ class FACTRTeleopDualBase(Node, ABC):
             10,
             callback_group=self._gain_cb_group,
         )
+        self.create_subscription(
+            Float64MultiArray,
+            f"/factr_null_space_control_{side}",
+            self._on_null_space_control,
+            10,
+            callback_group=self._gain_cb_group,
+        )
         self._grav_comp_gain_state_pub = self.create_publisher(
             Float64, f"/factr_grav_comp_gain_state_{side}", 10
         )
         self._force_feedback_gain_state_pub = self.create_publisher(
             Float64, f"/factr_force_feedback_gain_state_{side}", 10
+        )
+        self._leader_torque_gain_state_pub = self.create_publisher(
+            Float64, f"/factr_leader_torque_gain_state_{side}", 10
+        )
+        self._leader_torque_enabled_state_pub = self.create_publisher(
+            Bool, f"/factr_leader_torque_enabled_state_{side}", 10
         )
         self.create_timer(
             0.1, self._publish_gain_states, callback_group=self._gain_cb_group
@@ -210,7 +264,7 @@ class FACTRTeleopDualBase(Node, ABC):
         )
         if self.telemetry_enabled:
             self.create_timer(
-                0.02,
+                self.dt,
                 self._publish_telemetry,
                 callback_group=self._gain_cb_group,
             )
@@ -231,7 +285,6 @@ class FACTRTeleopDualBase(Node, ABC):
             JointState, f"/factr_force_feedback_{side}", self._on_force_feedback, 10,
             callback_group=self._force_feedback_cb_group,
         )
-
         # DFC owns calibration; FACTR uses the derived dynamics-model contract.
         self._get_dynamixel_offsets()
 
@@ -309,7 +362,6 @@ class FACTRTeleopDualBase(Node, ABC):
             thread.join()
         self._control_thread = None
 
-
     def _prepare_dynamixel(self):
         """
         Instantiates the Dynamixel drivers for the small and big power boards.
@@ -384,17 +436,95 @@ class FACTRTeleopDualBase(Node, ABC):
             self.get_logger().info(f"Port {self.dynamixel_port} not found. Please check the connection.")
             return
 
-        # set every board to current-control mode (0) with torque enabled
-        for driver in self._drivers():
+        # Put every board in current-control mode, latch zero goal current, and
+        # leave it de-energized until the dashboard requests leader torque.
+        for _, driver, servo_ids in self._driver_groups():
             driver.set_torque_mode(False)
             driver.set_operating_mode(0)
             driver.set_torque_mode(True)
+            driver.set_torque(np.zeros(len(servo_ids)))
+            driver.set_torque_mode(False)
+
+        if self.big_servo_ids:
+            # Each board owns a separate serial port, so its blocking reads,
+            # writes, and USB-buffer handling can proceed concurrently. Keep
+            # these workers alive instead of creating threads every iteration.
+            self._board_io_executor = ThreadPoolExecutor(
+                max_workers=2,
+                thread_name_prefix=f"factr-{self.side}-dxl-io",
+            )
 
     def _drivers(self):
         """Iterate over the active Dynamixel drivers (big board only if configured)."""
         yield self.driver_small
         if self.big_servo_ids:
             yield self.driver_big
+
+    def _driver_groups(self):
+        """Iterate over each board with the IDs commanded through that board."""
+        yield "small", self.driver_small, self.small_servo_ids
+        if self.big_servo_ids:
+            yield "big", self.driver_big, self.big_servo_ids
+
+    def _set_leader_torque_enabled(self, enabled):
+        """Change both boards' hardware torque state from the control thread."""
+        enabled = bool(enabled)
+        groups = tuple(self._driver_groups())
+        errors = []
+        if enabled:
+            for name, driver, _ in groups:
+                try:
+                    driver.set_torque_mode(True)
+                except Exception as exc:
+                    errors.append(f"{name} board torque enable failed: {exc}")
+            if errors:
+                # Never leave a partially energized dual-board leader.
+                for _, driver, _ in groups:
+                    try:
+                        driver.set_torque_mode(False)
+                    except Exception:
+                        pass
+                self.leader_torque_enabled = False
+                raise RuntimeError("; ".join(errors))
+            self.leader_torque_enabled = True
+            return
+
+        for name, driver, servo_ids in groups:
+            if not bool(getattr(driver, "torque_enabled", True)):
+                continue
+            try:
+                driver.set_torque(np.zeros(len(servo_ids)))
+            except Exception as exc:
+                errors.append(f"{name} board zero torque failed: {exc}")
+        for name, driver, _ in groups:
+            try:
+                driver.set_torque_mode(False)
+            except Exception as exc:
+                errors.append(f"{name} board torque disable failed: {exc}")
+        self.leader_torque_enabled = any(
+            bool(getattr(driver, "torque_enabled", False))
+            for _, driver, _ in groups
+        )
+        if errors:
+            raise RuntimeError("; ".join(errors))
+
+    def _apply_leader_torque(self, arm_torque, gripper_torque):
+        if self.leader_torque_gain_target > 0.0 and not self.leader_torque_enabled:
+            self._set_leader_torque_enabled(True)
+        if not self.leader_torque_enabled:
+            return np.zeros(self.num_arm_joints)
+        if self.leader_torque_gain_target <= 0.0 and self.leader_torque_gain <= 0.0:
+            self._set_leader_torque_enabled(False)
+            return np.zeros(self.num_arm_joints)
+        return self.set_leader_joint_torque(arm_torque, gripper_torque)
+
+    def _disable_leader_torque_after_read_failure(self):
+        if (
+            self.leader_torque_gain_target <= 0.0
+            and self.leader_torque_enabled
+        ):
+            self.leader_torque_gain = 0.0
+            self._set_leader_torque_enabled(False)
 
     def _assert_latency_timer(self, port):
         """Raise unless the ttyUSB latency timer for ``port`` is 1.
@@ -423,16 +553,72 @@ class FACTRTeleopDualBase(Node, ABC):
 
     def _read_merged_pos_vel(self, source="unspecified"):
         """Read both boards; return (positions, velocities) in full arm order."""
-        pos_small, vel_small = self.driver_small.get_positions_and_velocities(
-            source=source
-        )
         if self.big_servo_ids:
-            pos_big, vel_big = self.driver_big.get_positions_and_velocities(
+            if self._board_io_executor is None:
+                raise RuntimeError("dual-board I/O executor is not available")
+
+            futures = {
+                "small": self._board_io_executor.submit(
+                    self.driver_small.get_positions_and_velocities,
+                    source=source,
+                ),
+                "big": self._board_io_executor.submit(
+                    self.driver_big.get_positions_and_velocities,
+                    source=source,
+                ),
+            }
+            # Always join both transactions before propagating an exception.
+            # Otherwise a failed board could leave the other port active while
+            # the next iteration or shutdown starts touching the drivers.
+            wait(futures.values())
+            errors = []
+            results = {}
+            for board, future in futures.items():
+                try:
+                    results[board] = future.result()
+                except Exception as exc:
+                    errors.append((board, exc))
+
+            if errors:
+                # Programming/driver errors still terminate the control worker.
+                # Communication failures retain the skipped-tick behavior.
+                for _, exc in errors:
+                    if not isinstance(exc, DynamixelReadError):
+                        raise exc
+                if len(errors) == 1:
+                    raise errors[0][1]
+                detail = "; ".join(
+                    f"{board} board: {exc}" for board, exc in errors
+                )
+                raise DynamixelReadError(
+                    f"parallel Dynamixel reads failed ({detail})"
+                ) from errors[0][1]
+
+            pos_small, vel_small = results["small"]
+            pos_big, vel_big = results["big"]
+        else:
+            pos_small, vel_small = self.driver_small.get_positions_and_velocities(
                 source=source
             )
-        else:
             pos_big = vel_big = np.empty(0)
-        return self._merge_small_big(pos_small, pos_big), self._merge_small_big(vel_small, vel_big)
+        current_small = self.driver_small.present_current_raw()
+        torque_small = self.driver_small.current_estimated_torque()
+        if self.big_servo_ids:
+            current_big = self.driver_big.present_current_raw()
+            torque_big = self.driver_big.current_estimated_torque()
+        else:
+            current_big = torque_big = np.empty(0)
+        self._last_present_current_raw = self._merge_small_big(
+            current_small, current_big
+        )[:self.num_arm_joints]
+        self._last_current_estimated_torque = (
+            self._merge_small_big(torque_small, torque_big)
+            * self._motor_joint_signs
+        )[:self.num_arm_joints]
+        return (
+            self._merge_small_big(pos_small, pos_big),
+            self._merge_small_big(vel_small, vel_big),
+        )
 
 
     def _prepare_inverse_dynamics(self):
@@ -525,14 +711,47 @@ class FACTRTeleopDualBase(Node, ABC):
         Disables all torque on the leader arm and gripper during node shutdown.
         """
         self.stop_control_loop()
-        self.set_leader_joint_torque(np.zeros(self.num_arm_joints), 0.0)
-        for driver in self._drivers():
-            driver.set_torque_mode(False)
+        self._shutdown_board_io_executor()
+        errors = []
+        driver_groups = tuple(self._driver_groups())
+
+        # Treat each board independently. A disconnected small board must not
+        # prevent the healthy big board from receiving zero current and torque
+        # disable during teardown (or vice versa).
+        for name, driver, servo_ids in driver_groups:
+            if not bool(getattr(driver, "torque_enabled", True)):
+                continue
+            try:
+                driver.set_torque(np.zeros(len(servo_ids)))
+            except Exception as exc:
+                errors.append(f"{name} board zero torque failed: {exc}")
+        for name, driver, _ in driver_groups:
+            try:
+                driver.set_torque_mode(False)
+            except Exception as exc:
+                errors.append(f"{name} board torque disable failed: {exc}")
+
+        self.leader_torque_enabled = any(
+            bool(getattr(driver, "torque_enabled", False))
+            for _, driver, _ in driver_groups
+        )
+
+        if errors:
+            raise RuntimeError("; ".join(errors))
 
     def destroy_node(self):
         """Ensure no control transaction survives destruction of the ROS node."""
         self.stop_control_loop()
+        self._shutdown_board_io_executor()
         return super().destroy_node()
+
+    def _shutdown_board_io_executor(self):
+        """Join persistent board-I/O workers before serial-port teardown."""
+        executor = self._board_io_executor
+        if executor is None:
+            return
+        self._board_io_executor = None
+        executor.shutdown(wait=True, cancel_futures=True)
 
     def get_leader_joint_states(self):
         """
@@ -597,16 +816,59 @@ this is not what I want to
         split across the small and big boards. DFC's arm signs convert model torque
         back to motor torque; FACTR contributes only the gripper hardware sign.
         """
+        arm_torque = self._leader_model.scale_joint_torque(arm_torque)
         arm_gripper_torque = np.append(arm_torque, gripper_torque)
 
         small_torque = arm_gripper_torque[self.small_servo_indices]
         small_signs = self._motor_joint_signs[self.small_servo_indices]
-        self.driver_small.set_torque(small_torque * small_signs)
-
         if self.big_servo_ids:
+            if self._board_io_executor is None:
+                raise RuntimeError("dual-board I/O executor is not available")
             big_torque = arm_gripper_torque[self.big_servo_indices]
             big_signs = self._motor_joint_signs[self.big_servo_indices]
-            self.driver_big.set_torque(big_torque * big_signs)
+            futures = {
+                "small": self._board_io_executor.submit(
+                    self.driver_small.set_torque,
+                    small_torque * small_signs,
+                ),
+                "big": self._board_io_executor.submit(
+                    self.driver_big.set_torque,
+                    big_torque * big_signs,
+                ),
+            }
+            # Do not begin the next read while either half-duplex port is still
+            # transmitting. Join both writes before propagating an exception.
+            wait(futures.values())
+            errors = []
+            results = {}
+            for board, future in futures.items():
+                try:
+                    results[board] = future.result()
+                except Exception as exc:
+                    errors.append((board, exc))
+            if errors:
+                if len(errors) == 1:
+                    raise errors[0][1]
+                detail = "; ".join(
+                    f"{board} board: {exc}" for board, exc in errors
+                )
+                raise RuntimeError(
+                    f"parallel Dynamixel torque writes failed ({detail})"
+                ) from errors[0][1]
+            commanded_small = results["small"]
+            commanded_big = results["big"]
+        else:
+            commanded_small = self.driver_small.set_torque(
+                small_torque * small_signs
+            )
+            commanded_big = np.empty(0)
+
+        commanded_motor = self._merge_small_big(
+            commanded_small, commanded_big
+        )
+        return (commanded_motor * self._motor_joint_signs)[
+            :self.num_arm_joints
+        ]
 
     def joint_limit_barrier(self, arm_joint_pos, arm_joint_vel, gripper_joint_pos, gripper_joint_vel):
         """
@@ -657,12 +919,16 @@ this is not what I want to
             self._external_torque_at = time.monotonic()
 
     def _on_grav_comp_gain_target(self, msg):
-        """Set only the gravity-compensation activation target."""
+        """Set gravity and the master leader-torque target together."""
         new_target = float(np.clip(msg.data, 0.0, 1.0))
         if new_target > 0.0 and self.grav_comp_gain_target <= 0.0:
             self._enable_capture_remaining = 25
             self._enable_capture_samples = []
         self.grav_comp_gain_target = new_target
+        if new_target > 0.0 and self.leader_torque_gain_target <= 0.0:
+            self.leader_torque_gain = 0.0
+            self._leader_torque_gain_last_update = None
+        self.leader_torque_gain_target = new_target
         self.get_logger().info(
             f"FACTR TELEOP {self.name}: grav comp gain target -> "
             f"{self.grav_comp_gain_target:.3f}"
@@ -676,17 +942,47 @@ this is not what I want to
             f"{self.force_feedback_gain_target:.3f}"
         )
 
+    def _on_null_space_control(self, msg):
+        """Atomically install a DFC-coordinate target and activation state."""
+        command = np.asarray(msg.data, dtype=float)
+        if (
+            command.shape != (self.num_arm_joints + 1,)
+            or not np.all(np.isfinite(command))
+            or command[0] not in (0.0, 1.0)
+        ):
+            self.get_logger().warning(
+                f"FACTR TELEOP {self.name}: dropped invalid null-space control "
+                f"message with shape {command.shape}",
+                throttle_duration_sec=1.0,
+            )
+            return
+        enabled = bool(command[0]) and bool(self.null_space_regulation_enable)
+        self.null_space_joint_target = self._leader_model.dfc_position_to_model(
+            command[1:]
+        )
+        self.null_space_gain_target = float(enabled)
+        self.get_logger().info(
+            f"FACTR TELEOP {self.name}: null-space target updated; "
+            f"gain target -> {self.null_space_gain_target:.1f}"
+        )
+
     def _publish_gain_states(self):
-        """Publish both independent live gains for the status endpoint."""
+        """Publish component gains plus the actual master hardware state."""
         grav_msg = Float64()
         grav_msg.data = float(self.grav_comp_gain)
         self._grav_comp_gain_state_pub.publish(grav_msg)
         feedback_msg = Float64()
         feedback_msg.data = float(self.force_feedback_gain)
         self._force_feedback_gain_state_pub.publish(feedback_msg)
+        leader_gain_msg = Float64()
+        leader_gain_msg.data = float(self.leader_torque_gain)
+        self._leader_torque_gain_state_pub.publish(leader_gain_msg)
+        leader_enabled_msg = Bool()
+        leader_enabled_msg.data = bool(self.leader_torque_enabled)
+        self._leader_torque_enabled_state_pub.publish(leader_enabled_msg)
 
     def _publish_telemetry(self):
-        """Publish live control state plus zero-I/O Dynamixel diagnostics at 50 Hz."""
+        """Publish the latest control state and zero-I/O diagnostics at native rate."""
         if self._telemetry_snapshot:
             msg = String()
             payload = dict(self._telemetry_snapshot)
@@ -697,7 +993,8 @@ this is not what I want to
             self._telemetry_pub.publish(msg)
 
     def _capture_enable_tick(self, q, dq, tau_limit, tau_null, tau_gravity,
-                             tau_friction, tau_feedback, tau_command, grav_gain):
+                             tau_friction, tau_feedback, tau_calculated,
+                             tau_commanded, grav_gain):
         raw_q = self._last_raw_arm_q
         sample = {
             "stamp_monotonic_ns": time.monotonic_ns(),
@@ -707,17 +1004,29 @@ this is not what I want to
             "home_error_rad": (q - self.initial_match_joint_pos[:self.num_arm_joints]).tolist(),
             "limit_torque_nm": tau_limit.tolist(),
             "null_torque_nm": tau_null.tolist(),
+            "null_space_gain": float(self.null_space_gain),
+            "null_space_target_rad": self.null_space_joint_target.tolist(),
             "gravity_torque_nm": tau_gravity.tolist(),
             "friction_torque_nm": tau_friction.tolist(),
             "force_feedback_torque_nm": tau_feedback.tolist(),
             "grav_comp_gain": float(grav_gain),
             "grav_comp_gain_target": float(self.grav_comp_gain_target),
-            "friction_gain": float(self.stiction_comp_gain),
+            "friction_gain": self.stiction_comp_gain.tolist(),
             "force_feedback_gain": float(self.force_feedback_gain),
             "force_feedback_gain_target": float(self.force_feedback_gain_target),
+            "leader_torque_gain": float(self.leader_torque_gain),
+            "leader_torque_gain_target": float(self.leader_torque_gain_target),
+            "leader_torque_enabled": bool(self.leader_torque_enabled),
             "joint_offsets_rad": self.joint_offsets[:self.num_arm_joints].tolist(),
             "model_signs": self._leader_model.model_signs.tolist(),
-            "applied_torque_nm": tau_command.tolist(),
+            "calculated_torque_nm": tau_calculated.tolist(),
+            "commanded_torque_nm": tau_commanded.tolist(),
+            "present_current_raw": self._last_present_current_raw.tolist(),
+            "current_estimated_torque_nm": (
+                self._last_current_estimated_torque.tolist()
+            ),
+            # Backward-compatible alias for the historical pre-limit value.
+            "applied_torque_nm": tau_calculated.tolist(),
         }
         self._telemetry_snapshot = sample
         if self._enable_capture_remaining <= 0:
@@ -731,8 +1040,15 @@ this is not what I want to
             )
 
     def _update_component_gains(self):
-        """Advance gravity and feedback activation ramps independently."""
+        """Advance component ramps and the final leader-torque gate."""
         now = time.monotonic()
+        self.null_space_gain, self._null_space_gain_last_update = ramp_gain(
+            self.null_space_gain,
+            self.null_space_gain_target,
+            self._null_space_gain_last_update,
+            self.null_space_gain_ramp_time,
+            now,
+        )
         self.grav_comp_gain, self._grav_comp_gain_last_update = ramp_gain(
             self.grav_comp_gain,
             self.grav_comp_gain_target,
@@ -747,7 +1063,19 @@ this is not what I want to
             self.force_feedback_gain_ramp_time,
             now,
         )
-        return self.grav_comp_gain, self.force_feedback_gain
+        self.leader_torque_gain, self._leader_torque_gain_last_update = ramp_gain(
+            self.leader_torque_gain,
+            self.leader_torque_gain_target,
+            self._leader_torque_gain_last_update,
+            self.grav_comp_gain_ramp_time,
+            now,
+        )
+        return (
+            self.null_space_gain,
+            self.grav_comp_gain,
+            self.force_feedback_gain,
+            self.leader_torque_gain,
+        )
 
     def gravity_compensation(self, arm_joint_pos, arm_joint_vel):
         """
@@ -783,9 +1111,9 @@ this is not what I want to
         for i in range(self.num_arm_joints):
             if abs(arm_joint_vel[i]) < self.stiction_comp_enable_speed:
                 if self.stiction_dither_flag[i]:
-                    tau_ss[i] += self.stiction_comp_gain * abs(self.tau_g[i])
+                    tau_ss[i] += self.stiction_comp_gain[i] * abs(self.tau_g[i])
                 else:
-                    tau_ss[i] -= self.stiction_comp_gain * abs(self.tau_g[i])
+                    tau_ss[i] -= self.stiction_comp_gain[i] * abs(self.tau_g[i])
                 self.stiction_dither_flag[i] = ~self.stiction_dither_flag[i]
         return tau_ss
     
@@ -813,7 +1141,14 @@ this is not what I want to
             arm_joint_pos,
             self.null_space_joint_target[0:self.num_arm_joints],
         )
-        tau_n = null_space_projector @ (-self.null_space_kp*q_error-self.null_space_kd*arm_joint_vel)
+        pd_objective = null_space_pd_objective(
+            q_error,
+            arm_joint_vel,
+            self.null_space_kp,
+            self.null_space_kd,
+            self.null_space_torque_gain,
+        )
+        tau_n = null_space_projector @ pd_objective
         return tau_n
     
     def torque_feedback(self, external_torque, arm_joint_vel):
@@ -874,48 +1209,17 @@ this is not what I want to
         return tau
 
 
-    @abstractmethod
-    def get_leader_gripper_feedback(self):
-        """
-        This method should retrieve any data from the follower gripper that might be required
-        to achieve force-feedback in the leader gripper. For example, this method can be used
-        to get the current position of the follower gripper for position-position force-feedback
-        or the current force of the follower gripper for position-force force-feedback in the
-        leader gripper. This method is called at every iteration of the control loop if 
-        self.enable_gripper_feedback is set to True.
-
-        Returns:
-            Any: Feedback data required by the leader gripper. This can be a NumPy array, a 
-            scalar, or any other data type depending on the implementation.
-
-        Raises:
-            NotImplementedError: If the method is not implemented in a subclass.
-        """
-        pass
-
-
-    @abstractmethod
-    def gripper_feedback(self, leader_gripper_pos, leader_gripper_vel, gripper_feedback):
-        """
-        Processes feedback data from the follower gripper. This method is intended to compute 
-        force-feedback for the leader gripper. This method is called at every iteration of the 
-        control loop if self.enable_gripper_feedback is set to True.
-
-        Args:
-            leader_gripper_pos (float): Leader gripper position. Can be used to provide force-
-            feedback for the gripper.
-            leader_gripper_vel (float): Leader gripper velocity. Can be used to provide force-
-            feedback for the gripper.
-            gripper_feedback (Any): Feedback data from the gripper. The format can vary depending 
-            on the implementation, such as a NumPy array, scalar, or custom object.
-        
-        Returns:
-            float: The computed joint torque value to apply force-feedback to the leader gripper.
-
-        Raises:
-            NotImplementedError: If the method is not implemented in a subclass.
-        """
-        pass
+    def gripper_spring_torque(self, leader_gripper_pos, leader_gripper_vel):
+        """Return the calibrated one-sided trigger spring torque [Nm]."""
+        return torsional_spring_torque_nm(
+            leader_gripper_pos,
+            leader_gripper_vel,
+            self.gripper_spring_open_rad,
+            self.gripper_spring_closed_rad,
+            self.gripper_spring_stiffness,
+            self.gripper_spring_damping,
+            self.gripper_spring_max_torque,
+        )
 
 
     @abstractmethod
